@@ -1,0 +1,7 @@
+{
+  "typeId": "ipfs-cluster",
+  "displayName": "IPFS Cluster",
+  "description": "Distributed IPFS cluster for decentralised storage",
+  "providerId": "cluster-provider",
+  "providerName": "Cluster Provider"
+}

@@ -1,0 +1,21 @@
+{
+  "name": "provider-cluster",
+  "version": "1.0.0",
+  "description": "IPFS Cluster provider for Enopax platform",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "keywords": [
+    "enopax",
+    "provider",
+    "cluster",
+    "ipfs"
+  ],
+  "author": "Enopax",
+  "license": "MIT",
+  "dependencies": {
+    "@enopax/resource-api": "^1.0.0"
+  }
+}
