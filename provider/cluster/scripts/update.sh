@@ -50,16 +50,11 @@ fi
 CURRENT_CONFIG=$(cat "$CLUSTER_PATH/cluster.json")
 
 # Parse update fields (optional)
-NEW_NODES=$(echo "$INPUT" | jq -r '.nodes // empty')
-NEW_REPLICATION=$(echo "$INPUT" | jq -r '.replicationFactor // empty')
+NEW_WORKER_NODES=$(echo "$INPUT" | jq -r '.workerNodes // empty')
 
 # Update configuration if new values provided
-if [ -n "$NEW_NODES" ] && [ "$NEW_NODES" != "null" ]; then
-  CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq ".nodes = $NEW_NODES")
-fi
-
-if [ -n "$NEW_REPLICATION" ] && [ "$NEW_REPLICATION" != "null" ]; then
-  CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq ".replicationFactor = $NEW_REPLICATION")
+if [ -n "$NEW_WORKER_NODES" ] && [ "$NEW_WORKER_NODES" != "null" ]; then
+  CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq ".workerNodes = $NEW_WORKER_NODES")
 fi
 
 # Update timestamp
@@ -68,7 +63,7 @@ CURRENT_CONFIG=$(echo "$CURRENT_CONFIG" | jq ".updatedAt = \"$(date -u +"%Y-%m-%
 # Save updated configuration
 echo "$CURRENT_CONFIG" > "$CLUSTER_PATH/cluster.json"
 
-# TODO: Apply actual cluster configuration updates
+# TODO: Apply actual K8s cluster configuration updates (scale nodes)
 # For now, just update the JSON file
 
 cat <<EOF

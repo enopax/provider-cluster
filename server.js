@@ -1,7 +1,7 @@
 /**
  * Cluster Provider Server
  *
- * Uses @enopax/resource-api library to serve IPFS cluster provisioning
+ * Uses @enopax/resource-api library to serve Kubernetes cluster provisioning
  */
 
 const { createServer } = require('@enopax/resource-api');

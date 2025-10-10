@@ -1,6 +1,6 @@
 # Enopax Cluster Provider
 
-**IPFS Cluster Provisioning for Distributed Storage**
+**Kubernetes Cluster Provisioning for Container Orchestration**
 
 [![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](./CHANGELOG.md)
 [![Status](https://img.shields.io/badge/status-initial%20development-yellow.svg)](#status)
@@ -10,14 +10,14 @@
 
 ## Overview
 
-The Cluster Provider enables provisioning and management of IPFS clusters for distributed, decentralised storage. Powered by the [`@enopax/resource-api`](https://www.npmjs.com/package/@enopax/resource-api) framework, it provides production-ready IPFS cluster deployment through the Enopax platform.
+The Cluster Provider enables provisioning and management of Kubernetes (K8s) clusters for container orchestration. Powered by the [`@enopax/resource-api`](https://www.npmjs.com/package/@enopax/resource-api) framework, it provides production-ready Kubernetes cluster deployment through the Enopax platform.
 
 **Features**:
-- 🗂️ Deploy multi-node IPFS clusters
-- 📦 Configurable replication factors
-- 🔄 Automatic data synchronisation
+- ☸️ Deploy multi-node Kubernetes clusters
+- 🔧 Configurable control plane and worker nodes
 - 📊 Real-time cluster metrics
-- 🔧 Dynamic cluster scaling
+- 🔄 Dynamic node scaling
+- 🛡️ Built-in security and RBAC
 
 ---
 
@@ -28,8 +28,8 @@ The Cluster Provider enables provisioning and management of IPFS clusters for di
 - ✅ Server implementation using `@enopax/resource-api`
 - ✅ Provider API integration complete
 - ✅ Bash script structure in place
-- 🚧 IPFS cluster implementation (pending)
-- 🚧 Docker container deployment (pending)
+- 🚧 K8s cluster implementation (pending)
+- 🚧 kubectl and kubeadm integration (pending)
 
 ---
 
@@ -38,8 +38,9 @@ The Cluster Provider enables provisioning and management of IPFS clusters for di
 ### Prerequisites
 
 - Node.js 18+ and pnpm
-- Docker (for IPFS nodes)
-- IPFS and IPFS Cluster installed
+- Docker (for K8s nodes)
+- kubectl and kubeadm
+- Sufficient system resources (CPU, RAM, storage)
 
 ### Installation
 
@@ -67,8 +68,8 @@ curl http://localhost:3003/providers/info | json_pp
 # {
 #   "success": true,
 #   "providers": [{
-#     "typeId": "ipfs-cluster",
-#     "displayName": "IPFS Cluster",
+#     "typeId": "k8s-cluster",
+#     "displayName": "K8s Cluster",
 #     "endpoint": "/clusters",
 #     ...
 #   }]
@@ -83,11 +84,11 @@ curl http://localhost:3003/providers/info | json_pp
 
 **Via Platform UI**:
 1. Navigate to Resources → Create Resource
-2. Select "IPFS Cluster" provider
+2. Select "K8s Cluster" provider
 3. Configure cluster settings:
    - Cluster name
-   - Number of nodes
-   - Replication factor
+   - Number of worker nodes
+   - Kubernetes version
 4. Click "Provision"
 
 **Via API**:
@@ -95,9 +96,9 @@ curl http://localhost:3003/providers/info | json_pp
 curl -X POST http://localhost:3003/v1/clusters \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "production-storage",
-    "nodes": 5,
-    "replicationFactor": 3,
+    "name": "production-k8s",
+    "workerNodes": 3,
+    "k8sVersion": "1.28",
     "organisationName": "my-org",
     "projectName": "production"
   }'
@@ -107,30 +108,30 @@ curl -X POST http://localhost:3003/v1/clusters \
 ```json
 {
   "success": true,
-  "id": "my_org-production-production_storage",
-  "name": "production-storage",
+  "id": "my_org-production-production_k8s",
+  "name": "production-k8s",
   "status": "active",
-  "nodes": 5,
-  "replicationFactor": 3,
-  "message": "IPFS cluster provisioned successfully"
+  "workerNodes": 3,
+  "k8sVersion": "1.28",
+  "message": "Kubernetes cluster provisioned successfully"
 }
 ```
 
 ### Checking Cluster Status
 
 ```bash
-curl http://localhost:3003/v1/clusters/my_org-production-production_storage
+curl http://localhost:3003/v1/clusters/my_org-production-production_k8s
 ```
 
 **Response**:
 ```json
 {
   "success": true,
-  "id": "my_org-production-production_storage",
-  "name": "production-storage",
+  "id": "my_org-production-production_k8s",
+  "name": "production-k8s",
   "status": "active",
-  "nodes": 5,
-  "replicationFactor": 3,
+  "workerNodes": 3,
+  "k8sVersion": "1.28",
   "createdAt": "2025-10-10T12:00:00Z"
 }
 ```
@@ -138,20 +139,21 @@ curl http://localhost:3003/v1/clusters/my_org-production-production_storage
 ### Getting Cluster Metrics
 
 ```bash
-curl http://localhost:3003/v1/clusters/my_org-production-production_storage/metrics
+curl http://localhost:3003/v1/clusters/my_org-production-production_k8s/metrics
 ```
 
 **Response**:
 ```json
 {
   "success": true,
-  "id": "my_org-production-production_storage",
+  "id": "my_org-production-production_k8s",
   "metrics": {
     "uptime": 86400,
-    "totalStorageKB": 1024000,
-    "totalPins": 150,
-    "activeNodes": 5,
-    "replicationStatus": "healthy"
+    "totalNodes": 4,
+    "readyNodes": 4,
+    "pods": 25,
+    "cpuUsagePercent": 45,
+    "memoryUsagePercent": 62
   }
 }
 ```
@@ -159,18 +161,17 @@ curl http://localhost:3003/v1/clusters/my_org-production-production_storage/metr
 ### Updating Cluster Configuration
 
 ```bash
-curl -X PUT http://localhost:3003/v1/clusters/my_org-production-production_storage \
+curl -X PUT http://localhost:3003/v1/clusters/my_org-production-production_k8s \
   -H "Content-Type: application/json" \
   -d '{
-    "nodes": 7,
-    "replicationFactor": 4
+    "workerNodes": 5
   }'
 ```
 
 ### Deprovisioning a Cluster
 
 ```bash
-curl -X DELETE http://localhost:3003/v1/clusters/my_org-production-production_storage
+curl -X DELETE http://localhost:3003/v1/clusters/my_org-production-production_k8s
 ```
 
 ---
@@ -183,9 +184,9 @@ Clusters are configured via JSON schema:
 
 ```json
 {
-  "name": "my-cluster",
-  "nodes": 3,
-  "replicationFactor": 2,
+  "name": "my-k8s-cluster",
+  "workerNodes": 3,
+  "k8sVersion": "1.28",
   "organisationName": "my-org",
   "projectName": "my-project"
 }
@@ -193,8 +194,8 @@ Clusters are configured via JSON schema:
 
 **Parameters**:
 - `name` (required): Unique name for the cluster
-- `nodes` (optional): Number of IPFS nodes (default: 3)
-- `replicationFactor` (optional): Data replication count (default: 2)
+- `workerNodes` (optional): Number of worker nodes (default: 3)
+- `k8sVersion` (optional): Kubernetes version (default: latest stable)
 - `organisationName` (required): Organisation identifier
 - `projectName` (required): Project identifier
 
@@ -246,8 +247,8 @@ The Cluster Provider uses a layered architecture:
 
 1. **Server Layer**: Express via `@enopax/resource-api`
 2. **Provider Scripts**: Bash scripts for lifecycle management
-3. **IPFS Cluster**: Docker containers running IPFS nodes
-4. **Data Layer**: Distributed storage across cluster nodes
+3. **K8s Control Plane**: Master node with API server, scheduler, controller
+4. **Worker Nodes**: Container runtime and kubelet on each node
 
 See [`docs/architecture.md`](./docs/architecture.md) for detailed architecture documentation.
 
@@ -269,7 +270,7 @@ provider-cluster/
 │       │   ├── metrics.sh
 │       │   ├── update.sh
 │       │   └── deprovision.sh
-│       └── data/              # Cluster storage
+│       └── data/              # Cluster data
 ├── docs/
 │   ├── concept.md            # Core concepts
 │   └── architecture.md       # System architecture
@@ -281,20 +282,20 @@ provider-cluster/
 
 ## Use Cases
 
-### Distributed Storage
-- **Content Distribution**: Replicate content across multiple nodes
-- **High Availability**: Ensure data availability with redundancy
-- **Geographic Distribution**: Deploy nodes in different locations
+### Container Orchestration
+- **Microservices Deployment**: Deploy and manage containerised applications
+- **Auto-scaling**: Horizontal pod autoscaling based on metrics
+- **Service Discovery**: Built-in service discovery and load balancing
 
-### Backup & Archival
-- **Immutable Storage**: IPFS content addressing ensures data integrity
-- **Version History**: Track file versions through IPFS hashes
-- **Disaster Recovery**: Distributed replication protects against node failures
+### Development & Testing
+- **Development Clusters**: Isolated environments for development teams
+- **CI/CD Integration**: Automated deployment pipelines
+- **Testing Environments**: Ephemeral clusters for integration testing
 
-### Decentralised Applications
-- **dApp Storage**: Provide storage layer for decentralised applications
-- **NFT Storage**: Store NFT assets and metadata
-- **Content Publishing**: Censorship-resistant content distribution
+### Production Workloads
+- **High Availability**: Multi-node clusters with redundancy
+- **Rolling Updates**: Zero-downtime deployments
+- **Resource Management**: CPU and memory quotas per namespace
 
 See [`docs/concept.md`](./docs/concept.md) for detailed use cases.
 
@@ -307,7 +308,7 @@ See [`docs/concept.md`](./docs/concept.md) for detailed use cases.
 - Node.js 18+
 - pnpm
 - Docker Desktop
-- IPFS and IPFS Cluster
+- kubectl and kubeadm
 - Git
 
 ### Setup
@@ -328,7 +329,7 @@ pnpm dev
 
 ```bash
 # Test provision script manually
-echo '{"name":"test","organisationName":"myorg","projectName":"myproj"}' | \
+echo '{"name":"test","workerNodes":2,"organisationName":"myorg","projectName":"myproj"}' | \
   bash provider/cluster/scripts/provision.sh
 
 # Test status script
@@ -348,42 +349,44 @@ echo '{"id":"myorg-myproj-test"}' | \
 
 ## Security
 
-### Data Security
-- All data stored using IPFS content addressing
-- No mutable references without explicit pinning
-- Encrypted transport between nodes
+### Cluster Security
+- RBAC enabled by default
+- Network policies for pod-to-pod communication
+- Secret management with encryption at rest
+- TLS for all API server communication
 
 ### Access Control
 - Optional API key authentication
 - Organisation/project scoping
 - Audit logging for all operations
+- Kubeconfig generation for authorized users
 
 ### Isolation
-- Each cluster runs in isolated Docker network
+- Each cluster runs in isolated network
 - Resource quotas prevent resource exhaustion
-- No cross-cluster data access
+- No cross-cluster access
 
 ---
 
 ## Roadmap
 
 ### v0.2.0 (Next)
-- [ ] Docker-based IPFS node deployment
-- [ ] Cluster initialisation and configuration
-- [ ] Node health monitoring
-- [ ] Basic replication verification
+- [ ] Kubernetes cluster initialisation with kubeadm
+- [ ] Control plane and worker node deployment
+- [ ] kubectl access configuration
+- [ ] Basic health monitoring
 
 ### v0.3.0
-- [ ] Dynamic node scaling
-- [ ] Advanced metrics and monitoring
-- [ ] Cluster backup and restore
-- [ ] Geographic distribution
+- [ ] Dynamic node scaling (add/remove workers)
+- [ ] Cluster upgrades (K8s version updates)
+- [ ] Advanced metrics (pod, node, resource usage)
+- [ ] Persistent volume management
 
 ### v1.0.0
 - [ ] Production-ready deployment
-- [ ] Kubernetes support
-- [ ] Enterprise features
-- [ ] Comprehensive testing
+- [ ] High availability control plane
+- [ ] Multi-cloud support
+- [ ] Comprehensive monitoring and logging
 
 ---
 
@@ -419,8 +422,8 @@ MIT
 
 - Built with [`@enopax/resource-api`](https://www.npmjs.com/package/@enopax/resource-api)
 - Part of the [Enopax](https://github.com/enopax) ecosystem
-- Powered by [IPFS](https://ipfs.io/) and [IPFS Cluster](https://cluster.ipfs.io/)
+- Powered by [Kubernetes](https://kubernetes.io/)
 
 ---
 
-**Status**: Initial development • IPFS implementation pending • v0.1.0
+**Status**: Initial development • K8s implementation pending • v0.1.0

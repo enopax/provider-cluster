@@ -57,10 +57,11 @@ cat <<EOF
   "id": "$ID",
   "metrics": {
     "uptime": $UPTIME,
-    "totalStorageKB": $TOTAL_SIZE,
-    "totalPins": 0,
-    "activeNodes": 0,
-    "replicationStatus": "healthy"
+    "totalNodes": 0,
+    "readyNodes": 0,
+    "pods": 0,
+    "cpuUsagePercent": 0,
+    "memoryUsagePercent": 0
   }
 }
 EOF

@@ -8,10 +8,10 @@ This file provides guidance to Claude Code when working with the Enopax Cluster 
 ## 📚 Project Overview
 
 **Name**: Enopax Cluster Provider
-**Purpose**: IPFS cluster provisioning for distributed storage
-**Status**: 🚧 Initial Development - Framework complete, IPFS implementation pending
+**Purpose**: Kubernetes cluster provisioning for container orchestration
+**Status**: 🚧 Initial Development - Framework complete, K8s implementation pending
 
-**Core Principle**: Enable distributed, decentralised storage through easy-to-provision IPFS clusters integrated with the Enopax platform.
+**Core Principle**: Enable container orchestration through easy-to-provision Kubernetes clusters integrated with the Enopax platform.
 
 ---
 
@@ -77,9 +77,9 @@ provider-cluster/
 ## 🎯 Project Goals
 
 ### Primary Objectives
-1. **Cluster Deployment** - Simple provisioning of multi-node IPFS clusters
-2. **Replication Management** - Configurable replication factors for data redundancy
-3. **Distributed Storage** - Geographic distribution of cluster nodes
+1. **Cluster Deployment** - Simple provisioning of multi-node Kubernetes clusters
+2. **Container Orchestration** - Deploy and manage containerised applications
+3. **Auto-scaling** - Dynamic scaling of worker nodes
 4. **Health Monitoring** - Real-time cluster health and metrics
 5. **Resource API Integration** - Seamless integration with Enopax ecosystem
 
@@ -93,15 +93,15 @@ provider-cluster/
 - Node.js with `@enopax/resource-api`
 - Bash scripts for lifecycle operations
 
-**IPFS Stack**:
-- IPFS (InterPlanetary File System)
-- IPFS Cluster for distributed pinning
-- Docker containers for node isolation
+**Kubernetes Stack**:
+- Kubernetes (K8s) for container orchestration
+- kubectl and kubeadm for cluster management
+- Docker/containerd for container runtime
 
-**Storage**:
-- Content-addressed IPFS storage
-- Distributed across cluster nodes
-- Configurable replication factor
+**Orchestration**:
+- Control plane (API server, scheduler, controller)
+- Worker nodes with kubelet
+- Pod networking and service discovery
 
 ---
 
@@ -113,22 +113,22 @@ provider-cluster/
 - Creates cluster directory structure
 - Generates unique cluster ID
 - Stores configuration in cluster.json
-- TODO: Deploy IPFS nodes in Docker containers
+- TODO: Initialize K8s cluster with kubeadm
 
 **status.sh**:
 - Reads cluster configuration
 - Returns cluster status
-- TODO: Query actual IPFS cluster health
+- TODO: Query actual K8s cluster health (kubectl get nodes)
 
 **metrics.sh**:
 - Calculates uptime
-- Measures storage usage
-- TODO: Get real metrics from IPFS cluster API
+- Measures resource usage
+- TODO: Get real metrics from K8s (kubectl top nodes/pods)
 
 **update.sh**:
 - Updates cluster configuration
-- Modifies node count and replication factor
-- TODO: Apply changes to running cluster
+- Scales worker node count
+- TODO: Apply changes to running cluster (kubectl scale)
 
 **list.sh**:
 - Lists all clusters for org/project
@@ -155,7 +155,7 @@ GET /providers/info
 **Provision**:
 ```bash
 POST /v1/clusters
-# Input: name, nodes, replicationFactor, org, project
+# Input: name, workerNodes, k8sVersion, org, project
 # Output: cluster ID, status
 ```
 
@@ -168,13 +168,13 @@ GET /v1/clusters/:id
 **Metrics**:
 ```bash
 GET /v1/clusters/:id/metrics
-# Returns: uptime, storage, pins, node health
+# Returns: uptime, nodes, pods, CPU/memory usage
 ```
 
 **Update**:
 ```bash
 PUT /v1/clusters/:id
-# Update: nodes, replication factor
+# Update: worker node count
 ```
 
 **Delete**:
@@ -187,20 +187,20 @@ DELETE /v1/clusters/:id
 
 ## 💡 Use Cases
 
-### Distributed Storage
-- Content distribution networks
-- Geographic redundancy
-- High availability storage
+### Container Orchestration
+- Microservices deployment
+- Service discovery and load balancing
+- Auto-scaling based on metrics
 
-### Backup & Archival
-- Immutable content addressing
-- Version history tracking
-- Disaster recovery
+### Development & Testing
+- Development environments
+- CI/CD integration
+- Ephemeral test clusters
 
-### Decentralised Applications
-- dApp storage backend
-- NFT asset storage
-- Censorship-resistant publishing
+### Production Workloads
+- High availability applications
+- Rolling updates
+- Resource quotas and limits
 
 ---
 
@@ -235,17 +235,17 @@ DELETE /v1/clusters/:id
 - ✅ Basic CRUD operations (file-based)
 - ✅ Documentation
 
-### Phase 2: IPFS Integration (Next)
-- [ ] Docker-based IPFS node deployment
-- [ ] IPFS Cluster initialisation
+### Phase 2: K8s Integration (Next)
+- [ ] Kubernetes cluster initialisation with kubeadm
+- [ ] Control plane and worker node deployment
+- [ ] kubectl configuration
 - [ ] Node health monitoring
-- [ ] Actual replication management
 
 ### Phase 3: Production Features
-- [ ] Dynamic scaling
-- [ ] Geographic distribution
-- [ ] Advanced metrics
-- [ ] Backup and restore
+- [ ] Dynamic node scaling
+- [ ] Cluster upgrades
+- [ ] Advanced metrics (kubectl top)
+- [ ] Persistent volume management
 
 ---
 
@@ -290,17 +290,17 @@ chmod +x provider/cluster/scripts/*.sh
 ## 📝 Next Steps
 
 ### Immediate Tasks
-1. Implement Docker-based IPFS node deployment
-2. Configure IPFS Cluster
-3. Add health checks
-4. Implement real metrics gathering
+1. Implement kubeadm cluster initialisation
+2. Deploy control plane and worker nodes
+3. Generate kubeconfig for access
+4. Implement real metrics gathering (kubectl)
 
 ### Future Enhancements
-1. Kubernetes deployment
-2. Geographic node distribution
+1. High availability control plane
+2. Multi-cloud deployment
 3. Advanced monitoring dashboard
-4. Backup/restore functionality
+4. Helm chart support
 
 ---
 
-*This provider is in initial development. Server framework is complete, IPFS integration is pending.*
+*This provider is in initial development. Server framework is complete, K8s integration is pending.*

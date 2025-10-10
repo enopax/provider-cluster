@@ -35,7 +35,7 @@ EOF
   exit 1
 fi
 
-# TODO: Stop running IPFS cluster nodes
+# TODO: Stop K8s cluster (kubectl delete, destroy nodes)
 # For now, just remove the directory
 
 # Remove cluster directory

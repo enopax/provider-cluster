@@ -1,4 +1,4 @@
-# Concept: IPFS Cluster Provider
+# Concept: Kubernetes Cluster Provider
 
 **Date**: 2025-10-10
 **Status**: Initial Development
@@ -7,7 +7,7 @@
 
 ## Overview
 
-The Cluster Provider enables distributed, decentralised storage through IPFS clusters. It integrates with the Enopax platform as a resource provider, leveraging the `@enopax/resource-api` framework.
+The Cluster Provider enables container orchestration through Kubernetes clusters. It integrates with the Enopax platform as a resource provider, leveraging the `@enopax/resource-api` framework.
 
 ---
 
@@ -15,27 +15,27 @@ The Cluster Provider enables distributed, decentralised storage through IPFS clu
 
 ### 1. **Simplicity First**
 
-IPFS clusters should be as easy to provision as any other resource:
+Kubernetes clusters should be as easy to provision as any other resource:
 - Simple bash scripts handle lifecycle operations
 - JSON schema defines configuration
 - Standard Resource API patterns
-- No complex orchestration required
+- kubeadm for cluster initialisation
 
-### 2. **Distributed by Default**
+### 2. **Container-Native**
 
-Leverage IPFS for truly distributed storage:
-- Content addressing ensures data integrity
-- Multi-node replication for redundancy
-- Geographic distribution support
-- No single point of failure
+Leverage Kubernetes for container orchestration:
+- Deploy and manage containerised applications
+- Service discovery and load balancing
+- Auto-scaling based on metrics
+- Rolling updates with zero downtime
 
 ### 3. **Production Ready**
 
 Clusters designed for real-world use:
-- Docker-based deployment
-- Health monitoring and metrics
+- Multi-node architecture (control plane + workers)
+- RBAC and security policies
 - Scalable architecture
-- Enterprise-grade security
+- Enterprise-grade features
 
 ### 4. **Integration Over Isolation**
 
@@ -49,41 +49,41 @@ Clusters are first-class citizens in the Enopax ecosystem:
 
 ## Use Cases
 
-### Distributed Storage
+### Container Orchestration
 
-**Content Distribution**:
-- Replicate content across multiple geographic locations
-- Reduce latency through edge distribution
-- Ensure availability with redundancy
+**Microservices Deployment**:
+- Deploy and manage containerised applications
+- Service discovery and internal DNS
+- Load balancing across pods
+
+**Auto-scaling**:
+- Horizontal pod autoscaling based on CPU/memory
+- Cluster autoscaler for node management
+- Resource quotas and limits
+
+### Development & Testing
+
+**Development Clusters**:
+- Isolated environments for development teams
+- Namespace-based separation
+- Quick cluster spin-up for testing
+
+**CI/CD Integration**:
+- Automated deployment pipelines
+- Rolling updates and rollbacks
+- Blue-green and canary deployments
+
+### Production Workloads
 
 **High Availability**:
-- Multiple nodes prevent single point of failure
-- Automatic failover between nodes
-- Geographic redundancy for disaster recovery
+- Multi-node clusters with redundancy
+- Pod replication and health checks
+- Self-healing infrastructure
 
-### Backup & Archival
-
-**Immutable Storage**:
-- IPFS content addressing ensures data can't be tampered with
-- CID (Content Identifier) provides cryptographic proof
-- Version history through content hashes
-
-**Long-term Archival**:
-- Distributed replication prevents data loss
-- No vendor lock-in with open standards
-- Easy migration between providers
-
-### Decentralised Applications
-
-**dApp Storage**:
-- Provide storage backend for decentralised apps
-- Censorship-resistant content distribution
-- User-owned data
-
-**NFT Storage**:
-- Store NFT assets and metadata
-- Permanent, verifiable storage
-- Integration with blockchain
+**Resource Management**:
+- CPU and memory quotas per namespace
+- Priority classes for workload scheduling
+- Persistent volume management
 
 ---
 
@@ -94,11 +94,11 @@ Clusters are first-class citizens in the Enopax ecosystem:
 Like all Enopax providers, clusters are managed through bash scripts:
 
 ```
-provision.sh    → Create cluster and deploy nodes
+provision.sh    → Initialize K8s cluster
 status.sh       → Check cluster health
 metrics.sh      → Collect cluster metrics
-update.sh       → Scale cluster
-deprovision.sh  → Stop and remove cluster
+update.sh       → Scale worker nodes
+deprovision.sh  → Destroy cluster
 ```
 
 **Why bash scripts?**
@@ -106,23 +106,23 @@ deprovision.sh  → Stop and remove cluster
 - No framework lock-in
 - Easy to debug
 - Familiar to DevOps teams
-- Composable with existing tools
+- Direct kubectl/kubeadm integration
 
-### Docker for Node Deployment
+### Kubernetes Architecture
 
-Each IPFS node runs in its own Docker container:
-- Isolated file system
-- Resource limits (CPU, memory, storage)
-- Network configuration
-- Clean lifecycle management
+Multi-node K8s cluster:
+- Control plane (API server, scheduler, controller manager)
+- Worker nodes with kubelet and container runtime
+- Pod networking (CNI plugins)
+- Service mesh capabilities
 
-### IPFS Cluster for Coordination
+### kubeadm for Cluster Management
 
-IPFS Cluster manages distributed pinning:
-- Coordinated replication across nodes
-- Health monitoring
-- Automatic re-pinning on failure
-- Configurable replication factors
+kubeadm handles cluster lifecycle:
+- Cluster initialisation
+- Node joining
+- Certificate management
+- Cluster upgrades
 
 ---
 
@@ -132,16 +132,16 @@ IPFS Cluster manages distributed pinning:
 
 ```json
 {
-  "name": "production-storage",
-  "nodes": 5,
-  "replicationFactor": 3,
+  "name": "production-k8s",
+  "workerNodes": 3,
+  "k8sVersion": "1.28",
   "organisationName": "my-org",
   "projectName": "production"
 }
 ```
 
-**nodes**: Number of IPFS nodes in the cluster
-**replicationFactor**: How many copies of each pin
+**workerNodes**: Number of worker nodes in the cluster
+**k8sVersion**: Kubernetes version to deploy
 
 ---
 
@@ -166,25 +166,25 @@ IPFS Cluster manages distributed pinning:
 
 ## Future Enhancements
 
-### Geographic Distribution
-- Deploy nodes in different regions
-- Latency-based routing
-- Local replication preferences
+### High Availability Control Plane
+- Multi-master setup
+- Etcd clustering
+- Load balancer for API server
 
 ### Advanced Metrics
-- Real-time storage usage
-- Replication status
-- Node health monitoring
+- Real-time resource usage (kubectl top)
+- Pod and node metrics
+- Custom metrics with Prometheus
 - Performance analytics
 
 ### Enterprise Features
-- RBAC integration
+- Multi-tenancy with namespaces
 - Compliance reporting
 - SLA monitoring
-- Multi-tenancy
+- Helm chart management
 
 ---
 
 ## Conclusion
 
-The Cluster Provider brings distributed, decentralised storage to the Enopax platform while maintaining simplicity and production-readiness. By leveraging IPFS and a bash script foundation, it enables powerful storage capabilities that are easy to provision and manage.
+The Cluster Provider brings container orchestration to the Enopax platform while maintaining simplicity and production-readiness. By leveraging Kubernetes and a bash script foundation, it enables powerful orchestration capabilities that are easy to provision and manage.

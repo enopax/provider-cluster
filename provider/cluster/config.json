@@ -1,7 +1,7 @@
 {
-  "typeId": "ipfs-cluster",
-  "displayName": "IPFS Cluster",
-  "description": "Distributed IPFS cluster for decentralised storage",
+  "typeId": "k8s-cluster",
+  "displayName": "K8s Cluster",
+  "description": "K8s cluster for container orchestration",
   "providerId": "cluster-provider",
   "providerName": "Cluster Provider"
 }

@@ -7,8 +7,8 @@ COMMON_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Shared configuration
 CLUSTERS_BASE="$(cd "$COMMON_SCRIPT_DIR" && cd ../../ && pwd)/data/clusters"
-DEFAULT_NODES=3
-DEFAULT_REPLICATION_FACTOR=2
+DEFAULT_WORKER_NODES=3
+DEFAULT_K8S_VERSION="1.28"
 
 mkdir -p "$CLUSTERS_BASE"
 
