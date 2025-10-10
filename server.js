@@ -8,7 +8,7 @@ const { createServer } = require('@enopax/resource-api');
 
 // Create server with cluster provider configuration
 const app = createServer({
-  port: 3003,
+  port: 3000,
   host: 'localhost',
   authentication: {
     enabled: true,
@@ -23,7 +23,7 @@ const app = createServer({
   ]
 });
 
-const PORT = process.env.PORT || 3003;
+const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || 'localhost';
 
 app.listen(PORT, HOST, () => {
