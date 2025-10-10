@@ -11,8 +11,8 @@ const app = createServer({
   port: 3003,
   host: 'localhost',
   authentication: {
-    enabled: false,
-    apiKey: process.env.API_KEY || ''
+    enabled: true,
+    apiKey: process.env.API_KEY || 'secret-cluster-key'
   },
   providers: [
     {

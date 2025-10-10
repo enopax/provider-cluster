@@ -20,11 +20,10 @@ EOF
   exit 1
 fi
 
-# Get cluster path
-CLUSTER_PATH=$(get_cluster_path "$ID")
+cd "$CLUSTERS_BASE"
 
 # Check if cluster exists
-if [ ! -d "$CLUSTER_PATH" ]; then
+if [ ! -d "$ID" ]; then
   cat <<EOF
 {
   "success": false,
@@ -35,11 +34,9 @@ EOF
   exit 1
 fi
 
-# TODO: Stop K8s cluster (kubectl delete, destroy nodes)
-# For now, just remove the directory
+kubectl delete -f "$ID/cluster.yaml" >&2 || true
 
-# Remove cluster directory
-rm -rf "$CLUSTER_PATH"
+rm -rf "$ID"
 
 cat <<EOF
 {

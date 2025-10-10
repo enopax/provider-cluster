@@ -58,6 +58,9 @@ echo "[provision.sh] Creating cluster directory: $ID" >&2
 mkdir -p "$ID"
 cd "$ID"
 
+sed "s/name: test/name: $NAME_SLUG/" "$SCRIPT_DIR/manifests/cluster.yaml" > "cluster.yaml"
+kubectl apply -f "cluster.yaml" >&2
+
 # Create kubeconfig
 
 echo "# Kubeconfig will be generated here" > kubeconfig.yaml
@@ -72,8 +75,6 @@ cat <<EOF
   "id": "$ID",
   "name": "$NAME",
   "status": "active",
-  "workerNodes": $WORKER_NODES,
-  "k8sVersion": "$K8S_VERSION",
   "message": "Kubernetes cluster provisioned successfully"
 }
 EOF
