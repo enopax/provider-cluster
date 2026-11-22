@@ -17,6 +17,7 @@
   "author": "Enopax",
   "license": "MIT",
   "dependencies": {
-    "@enopax/resource-api": "^1.0.0"
+    "@enopax/resource-api": "^1.0.0",
+    "@kubernetes/client-node": "^2.0.2"
   }
 }

@@ -5,6 +5,7 @@
  */
 
 const { createServer } = require('@enopax/resource-api');
+const handlers = require('./provider/cluster/handlers');
 
 // Create server with cluster provider configuration
 const app = createServer({
@@ -18,7 +19,11 @@ const app = createServer({
     {
       apiVersion: 'v1',
       endpoint: '/clusters',
-      scriptsFolder: './provider/cluster/scripts'
+      // Funktionen statt Skripte: der Kubernetes-Client wird einmal aufgebaut
+      // und nicht bei jedem Aufruf. Die alten Skripte liegen bis zum Aufraeumen
+      // daneben; sie legten einen Namespace an und nannten das einen Cluster.
+      providerFolder: './provider/cluster',
+      handlers
     }
   ]
 });

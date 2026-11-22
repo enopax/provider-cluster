@@ -1,0 +1,169 @@
+/**
+ * Uebersetzung zwischen der Anfrage des Portals und einem k0rdent-ClusterDeployment.
+ *
+ * KCM hat keine eigene REST-Schnittstelle. Was es anbietet, ist die
+ * Kubernetes-API des Management-Clusters mit seinen CRDs; dieser Provider ist
+ * die Fassade davor. Er legt ein ClusterDeployment an und liest dessen Status -
+ * gebaut wird der Cluster von KCM selbst, ueber Cluster API und Helm.
+ *
+ * Was hier *nicht* entschieden wird: welche Vorlage, welches Credential,
+ * welcher Standort, welche Maschinentypen. Das weiss console-api aus seinen
+ * Tabellen provider_regions und provider_sizes und schickt es mit. Diese Datei
+ * weiss nur, wie ein Hetzner- und wie ein AWS-ClusterDeployment aussieht.
+ */
+
+const GROUP = 'k0rdent.mirantis.com';
+const VERSION = 'v1beta1';
+const PLURAL = 'clusterdeployments';
+
+/** Wo die ClusterDeployments angelegt werden, solange es keine Mandanten-Namespaces gibt. */
+const DEFAULT_NAMESPACE = process.env.KCM_NAMESPACE || 'kcm-system';
+
+/**
+ * Die Stellen, an denen sich die Anbieter unterscheiden.
+ *
+ * Die Vorlagen sind strukturgleich - region, controlPlaneNumber,
+ * workersNumber, k0s.version und je ein Maschinentyp. Nur die Schluessel fuer
+ * Maschinentyp und SSH-Schluessel heissen verschieden.
+ */
+const SHAPES = {
+  hetzner: {
+    machineTypeKey: 'type',
+    sshKeys: (names) => (names.length ? { sshKeyNames: names } : {}),
+  },
+  aws: {
+    machineTypeKey: 'instanceType',
+    // AWS nimmt genau einen; mehrere waeren ein stiller Datenverlust.
+    sshKeys: (names) => (names.length ? { sshKeyName: names[0] } : {}),
+  },
+};
+
+/**
+ * Baut das ClusterDeployment.
+ *
+ * @param {object} req
+ * @param {string} req.name            Clustername, zugleich der Name des Objekts
+ * @param {string} req.providerId      hetzner | aws
+ * @param {string} req.template        k0rdent-ClusterTemplate
+ * @param {string} req.credential      k0rdent-Credential
+ * @param {string} req.region          Standort beim Anbieter: fsn1, eu-central-1
+ * @param {number} req.controlPlaneNumber
+ * @param {string} req.controlPlaneType
+ * @param {number} req.workersNumber
+ * @param {string} req.workerType
+ * @param {string} [req.k8sVersion]
+ * @param {string[]} [req.sshKeyNames]
+ * @param {string} [req.organisationName]
+ * @param {string} [req.projectName]
+ * @param {boolean} [req.dryRun]       Nur pruefen lassen, nichts bauen
+ */
+function buildClusterDeployment(req) {
+  const shape = SHAPES[req.providerId];
+  if (!shape) {
+    throw new Error(
+      `Unknown provider "${req.providerId}". Known: ${Object.keys(SHAPES).join(', ')}`,
+    );
+  }
+
+  const machine = (type) => ({ [shape.machineTypeKey]: type });
+
+  const config = {
+    region: req.region,
+    controlPlaneNumber: req.controlPlaneNumber,
+    workersNumber: req.workersNumber,
+    controlPlane: machine(req.controlPlaneType),
+    worker: machine(req.workerType),
+    ...shape.sshKeys(req.sshKeyNames || []),
+  };
+
+  // Nur setzen, wenn gewuenscht: ohne Angabe nimmt die Vorlage ihre eigene
+  // Version, und die ist verlaesslicher als eine, die wir raten.
+  if (req.k8sVersion) config.k0s = { version: req.k8sVersion };
+
+  return {
+    apiVersion: `${GROUP}/${VERSION}`,
+    kind: 'ClusterDeployment',
+    metadata: {
+      name: req.name,
+      namespace: req.namespace || DEFAULT_NAMESPACE,
+      labels: {
+        'enopax.io/managed': 'true',
+        ...(req.organisationSlug ? { 'enopax.io/organisation': req.organisationSlug } : {}),
+        ...(req.projectSlug ? { 'enopax.io/project': req.projectSlug } : {}),
+      },
+      // Namen duerfen hier stehen, Labels vertragen keine Leerzeichen.
+      annotations: {
+        ...(req.organisationName ? { 'enopax.io/organisation-name': req.organisationName } : {}),
+        ...(req.projectName ? { 'enopax.io/project-name': req.projectName } : {}),
+      },
+    },
+    spec: {
+      template: req.template,
+      credential: req.credential,
+      ...(req.dryRun ? { dryRun: true } : {}),
+      config,
+    },
+  };
+}
+
+/**
+ * Die Bedingungen, die KCM an einem ClusterDeployment fuehrt, in der
+ * Reihenfolge, in der sie wahr werden.
+ *
+ * Die Console zeichnet Fortschrittsstufen und verlangt laut ihrem README
+ * solche, "die die API deklariert hat, statt hier geschriebener". Das sind
+ * genau diese - erfunden wird nichts.
+ */
+const STAGE_ORDER = [
+  ['CredentialReady', 'Checking credentials'],
+  ['TemplateReady', 'Resolving the cluster template'],
+  ['HelmChartReady', 'Fetching the chart'],
+  ['HelmReleaseReady', 'Applying the release'],
+  ['Ready', 'Building the cluster'],
+  ['ServicesInReadyState', 'Starting the included services'],
+];
+
+/** Uebersetzt status.conditions in Stufen und einen Gesamtzustand. */
+function readStatus(deployment) {
+  const conditions = new Map(
+    ((deployment.status && deployment.status.conditions) || []).map((c) => [c.type, c]),
+  );
+
+  const stages = STAGE_ORDER.map(([type, label]) => {
+    const condition = conditions.get(type);
+    return {
+      key: type,
+      label,
+      // Ohne Bedingung ist die Stufe noch nicht erreicht, nicht gescheitert.
+      state: !condition ? 'pending' : condition.status === 'True' ? 'done' : 'running',
+      message: condition && condition.status !== 'True' ? condition.message : undefined,
+    };
+  });
+
+  const ready = conditions.get('Ready');
+  const failed = [...conditions.values()].find(
+    (c) => c.status === 'False' && c.reason && /fail|error/i.test(c.reason),
+  );
+
+  return {
+    ready: ready ? ready.status === 'True' : false,
+    status: ready && ready.status === 'True' ? 'active' : failed ? 'failed' : 'provisioning',
+    message: (ready && ready.message) || (failed && failed.message) || undefined,
+    stages,
+    // Anteil erreichter Stufen - die Console zeigt einen Balken, und er soll
+    // aus den Stufen folgen statt daneben zu laufen.
+    progress: Math.round(
+      (stages.filter((s) => s.state === 'done').length / stages.length) * 100,
+    ),
+  };
+}
+
+module.exports = {
+  GROUP,
+  VERSION,
+  PLURAL,
+  DEFAULT_NAMESPACE,
+  SHAPES,
+  buildClusterDeployment,
+  readStatus,
+};
