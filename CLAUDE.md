@@ -304,3 +304,34 @@ chmod +x provider/cluster/scripts/*.sh
 ---
 
 *This provider is in initial development. Server framework is complete, K8s integration is pending.*
+
+## Handler statt Skripte
+
+Die Operationen sind JavaScript-Funktionen in `provider/cluster/handlers.js`,
+keine Bash-Skripte. Der Rahmen (`@enopax/resource-api` ≥ 1.1.0) nimmt beides;
+hier sind es Funktionen, weil der Kubernetes-Client sonst bei jedem Aufruf neu
+aufgebaut wuerde und zwischen zwei Aufrufen nichts bleibt.
+
+`provider/cluster/k0rdent.js` ist die reine Uebersetzung — Anfrage hinein,
+ClusterDeployment heraus — und laesst sich ohne Cluster testen. `handlers.js`
+ist alles, was mit der Kubernetes-API spricht.
+
+## Was hier nicht entschieden wird
+
+Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
+`provider_regions` und `provider_sizes`. Wer sie hier noch einmal nachschlaegt,
+baut eine zweite Kopie derselben Zuordnung, und zwei Kopien laufen auseinander.
+
+## Nie erfinden
+
+`metrics` liefert `cpuUsagePercent: null`, wenn nichts es misst, und sagt
+`available: false`, solange es die kubeconfig des Kindclusters nicht gibt. Die
+Vorgaengerfassung schrieb an beiden Stellen 0 - und ein Cluster mit 0 % CPU
+liest sich wie ein leerer, nicht wie ein unbekannter.
+
+## Pruefen ohne zu bauen
+
+Ein ClusterDeployment laesst sich serverseitig im Dry-Run anlegen
+(`dryRun: 'All'` an der Kubernetes-API): die Admission-Webhooks pruefen alles,
+gespeichert wird nichts, und es entsteht kein Server. So ist die Uebersetzung
+gegen den echten Management-Cluster geprueft, ohne Geld auszugeben.

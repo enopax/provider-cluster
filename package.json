@@ -1,6 +1,6 @@
 {
   "name": "provider-cluster",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "description": "Kubernetes cluster provider for Enopax platform",
   "main": "server.js",
   "scripts": {
