@@ -1,0 +1,69 @@
+# Rechte des Cluster-Providers im Management-Cluster.
+#
+# Er legt ClusterDeployments an, liest ihren Zustand und loescht sie. Mehr
+# braucht er nicht, und mehr soll er nicht koennen: ein Dienst, der von aussen
+# Anfragen entgegennimmt, darf im Management-Cluster kein Admin sein.
+#
+# Was hier bewusst fehlt:
+#   - kein Zugriff auf andere Namespaces als kcm-system
+#   - kein Schreiben an Credentials oder ClusterTemplates, nur Lesen
+#   - kein Zugriff auf Nodes, Deployments oder sonst etwas im Cluster
+#
+# Das kubeconfig-Secret eines Kindclusters wird gelesen, weil die Metriken aus
+# dem Kindcluster kommen. Das ist das weitreichendste Recht hier: wer es hat,
+# kommt in jeden erzeugten Cluster. Es ist auf Secrets in kcm-system begrenzt.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: enopax-cluster-provider
+  namespace: kcm-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: enopax-cluster-provider
+  namespace: kcm-system
+rules:
+  - apiGroups: ["k0rdent.mirantis.com"]
+    resources: ["clusterdeployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Nur lesen: welche Vorlagen und Credentials es gibt, entscheidet der
+  # Betrieb des Management-Clusters, nicht dieser Dienst.
+  - apiGroups: ["k0rdent.mirantis.com"]
+    resources: ["clustertemplates", "credentials"]
+    verbs: ["get", "list", "watch"]
+  # Die kubeconfigs der Kindcluster, fuer die Metriken.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: enopax-cluster-provider
+  namespace: kcm-system
+subjects:
+  - kind: ServiceAccount
+    name: enopax-cluster-provider
+    namespace: kcm-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: enopax-cluster-provider
+---
+# Langlebiges Token. Seit Kubernetes 1.24 legt ein ServiceAccount keines mehr
+# von selbst an; wer eines ausserhalb des Clusters braucht, erzeugt es so.
+#
+# Der Provider laeuft auf dem App-Host, nicht im Management-Cluster. Das kostet
+# dieses Token - dafuer braucht der Dienst keinen oeffentlichen Hostnamen und
+# ist nur im internen Netz neben console-api erreichbar. Liefe er im Cluster,
+# waere das Token gespart, aber er muesste von aussen erreichbar sein.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: enopax-cluster-provider-token
+  namespace: kcm-system
+  annotations:
+    kubernetes.io/service-account.name: enopax-cluster-provider
+type: kubernetes.io/service-account-token
