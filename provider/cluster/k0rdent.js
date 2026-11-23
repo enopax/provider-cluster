@@ -29,10 +29,16 @@ const DEFAULT_NAMESPACE = process.env.KCM_NAMESPACE || 'kcm-system';
 const SHAPES = {
   hetzner: {
     machineTypeKey: 'type',
-    sshKeys: (names) => (names.length ? { sshKeyNames: names } : {}),
+    // Pflicht. Ohne scheitert nicht das ClusterDeployment - das nimmt die
+    // API an -, sondern erst der Helm-Install mit
+    // "HetznerCluster ... spec.sshKeys: Required value". Deshalb hier
+    // abfangen, bevor ein Objekt entsteht, das nie gebaut werden kann.
+    sshKeysRequired: true,
+    sshKeys: (names) => ({ sshKeyNames: names }),
   },
   aws: {
     machineTypeKey: 'instanceType',
+    sshKeysRequired: false,
     // AWS nimmt genau einen; mehrere waeren ein stiller Datenverlust.
     sshKeys: (names) => (names.length ? { sshKeyName: names[0] } : {}),
   },
@@ -65,6 +71,14 @@ function buildClusterDeployment(req) {
     );
   }
 
+  const sshKeyNames = req.sshKeyNames || [];
+  if (shape.sshKeysRequired && sshKeyNames.length === 0) {
+    throw new Error(
+      `Provider "${req.providerId}" requires at least one SSH key name; none was given. ` +
+        'They belong to the project behind the credential — see provider_regions.sshKeyNames.',
+    );
+  }
+
   const machine = (type) => ({ [shape.machineTypeKey]: type });
 
   const config = {
@@ -73,7 +87,7 @@ function buildClusterDeployment(req) {
     workersNumber: req.workersNumber,
     controlPlane: machine(req.controlPlaneType),
     worker: machine(req.workerType),
-    ...shape.sshKeys(req.sshKeyNames || []),
+    ...shape.sshKeys(sshKeyNames),
   };
 
   // Nur setzen, wenn gewuenscht: ohne Angabe nimmt die Vorlage ihre eigene
