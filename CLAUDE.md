@@ -173,7 +173,27 @@ Katalogwert sind und bis heute manuell eingerichtet werden
   `ep-eu1-fsn1-childapi` vor `haproxy-ingress`, `external-dns-childapi` und
   das Label `kcm-region-cluster=true` am regionalen ClusterDeployment.
 
-## Was hier nicht entschieden wird## Was hier nicht entschieden wird
+## Die Mandantenkennung entscheidet dieser Dienst nicht
+
+`kof-tenant-id` kommt als `tenantId` von console-api. Hier stand einmal der
+Organisations-Slug, und das war kein Namensfehler, sondern eine
+Sicherheitsentscheidung an der falschen Stelle:
+
+Der `kof-operator` legt je Cluster einen VMUser an, klemmt ihn serverseitig
+auf diese Kennung und legt dessen Zugangsdaten **in den Kindcluster** - die
+Kollektoren schreiben damit. Weil die kubeconfig des Kindclusters an den
+Kunden geht, liest jeder mit Clusterzugang genau das, worauf die Kennung
+klemmt.
+
+Mit der Organisation als Kennung laese ein projektgebundenes Mitglied die
+Telemetrie aller Projekte seiner Organisation. enopax/enopax#39.
+
+Fehlt die Kennung, wird **kein** Label gesetzt - lieber keine Abgrenzung als
+eine falsche. Ohne Label legt der Operator keinen VMUser an; die Telemetrie
+liegt dann im gemeinsamen Mandanten und ist nicht abgegrenzt, aber sie ist
+auch nicht falsch abgegrenzt.
+
+## Was hier nicht entschieden wird
 
 Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
 `provider_regions` und `provider_sizes`. Wer sie hier noch einmal nachschlaegt,

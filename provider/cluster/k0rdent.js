@@ -361,9 +361,18 @@ function kofLabels(req, shape) {
     'k0rdent.mirantis.com/kof-regional-cluster-name': req.regionalClusterName,
     'k0rdent.mirantis.com/kof-regional-cluster-namespace':
       req.regionalClusterNamespace || DEFAULT_NAMESPACE,
-    ...(req.organisationSlug
-      ? { 'k0rdent.mirantis.com/kof-tenant-id': req.organisationSlug }
-      : {}),
+    // Je Projekt, von console-api gebildet. Stand hier einmal
+    // `organisationSlug`, und das war eine Entscheidung mit
+    // Sicherheitsfolge, die mir nicht zusteht: der kof-operator legt je
+    // Cluster einen VMUser an, klemmt ihn serverseitig auf diese Kennung, und
+    // legt dessen Zugangsdaten **in den Kindcluster** - die Kollektoren
+    // schreiben damit. Da die kubeconfig des Kindes an den Kunden geht, liest
+    // jeder mit Clusterzugang genau das, worauf die Kennung klemmt.
+    //
+    // Mit der Organisation als Kennung laese ein projektgebundenes Mitglied
+    // die Telemetrie aller Projekte seiner Organisation. Siehe
+    // enopax/enopax#39.
+    ...(req.tenantId ? { 'k0rdent.mirantis.com/kof-tenant-id': req.tenantId } : {}),
   };
 }
 

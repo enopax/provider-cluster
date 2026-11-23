@@ -48,6 +48,7 @@ const PAAS = {
   regionalClusterName: 'ep-eu1-fsn1-standalone',
   regionalClusterNamespace: 'kcm-system',
   organisationSlug: 'tenant-a',
+  tenantId: 'tenant-a_portal',
   k0sVersion: 'v1.35.4+k0s.0',
 };
 
@@ -105,7 +106,13 @@ test('der PaaS Cluster ist feldgleich mit eu1f-test01', () => {
     metadata.labels['k0rdent.mirantis.com/kof-regional-cluster-name'],
     'ep-eu1-fsn1-standalone',
   );
-  assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-tenant-id'], 'tenant-a');
+  // Je Projekt, nicht je Organisation: die Zugangsdaten des VMUser liegen im
+  // Kindcluster, dessen kubeconfig an den Kunden geht - die Kennung
+  // entscheidet, wer wessen Telemetrie lesen kann.
+  assert.strictEqual(
+    metadata.labels['k0rdent.mirantis.com/kof-tenant-id'],
+    'tenant-a_portal',
+  );
 
   // cert-manager, weil die hosted-Vorlage es nicht mitbringt und KOFs
   // otel-operator die Certificate-CRDs braucht. Und sonst nichts: das CNI
@@ -669,4 +676,19 @@ test('Volumes werden gelesen, und keine sind keine 0 TB', () => {
   // dahinter Volumes, deren Groesse die Rechnung mitbestimmt.
   assert.strictEqual(voll.totalGi, 10 + 1024);
   assert.strictEqual(voll.volumes[0].storageClass, 'hcloud-volumes');
+});
+
+test('ohne Mandantenkennung kein KOF-Mandantenlabel', () => {
+  const { metadata } = buildClusterDeployment({ ...PAAS, tenantId: undefined });
+
+  // Lieber kein Label als ein falsches. Ohne Label legt der kof-operator
+  // keinen VMUser an - die Telemetrie landet dann im gemeinsamen Mandanten
+  // und ist nicht abgegrenzt, aber sie ist auch nicht *falsch* abgegrenzt.
+  //
+  // Hier stand vorher `organisationSlug` als Rueckfall. Das waere der
+  // gefaehrlichere Fall: eine Klemmung auf die ganze Organisation sieht aus
+  // wie Trennung und ist keine fuer projektgebundene Mitglieder.
+  assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-tenant-id'], undefined);
+  // Die Zuordnung zum regionalen Cluster bleibt - die ist etwas anderes.
+  assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-cluster-role'], 'child');
 });
