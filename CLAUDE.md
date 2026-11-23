@@ -147,6 +147,28 @@ Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
 `provider_regions` und `provider_sizes`. Wer sie hier noch einmal nachschlaegt,
 baut eine zweite Kopie derselben Zuordnung, und zwei Kopien laufen auseinander.
 
+## Gemessen, nicht geraten - und nicht ungemessen behauptet
+
+`nodeUsage` liest `metrics.k8s.io` im Kindcluster. Zwei Rechenregeln, die
+keine Geschmacksfrage sind:
+
+- **gegen `allocatable`, nicht `capacity`** - was das System sich reserviert,
+  kann der Kunde nicht benutzen, und ein Prozentwert gegen die Rohkapazitaet
+  sieht harmloser aus als er ist
+- **ueber den Cluster nach Kapazitaet gewichtet**, nicht als Mittelwert der
+  Prozentwerte. Zwei Knoten verschiedener Groesse ergaeben sonst eine Zahl,
+  die keiner Maschine entspricht: 2,1 von 6 Kernen sind 35 %, der Mittelwert
+  waere 27,5
+
+Hier stand vorher `cpuUsagePercent: null` mit dem Kommentar, es fehle der
+`metrics-server` im Kindcluster. **Das war nicht gemessen, sondern vermutet** -
+k0s bringt ihn in beiden Varianten mit, und `kubectl top nodes` liefert dort
+echte Zahlen. Ich habe das Ticket dazu mit derselben falschen Annahme
+geschrieben, weil ich den Kommentar fuer einen Befund hielt.
+
+Ein Kommentar, der eine Luecke behauptet, gehoert mit einem Beleg versehen
+oder nachgeprueft, bevor er weitergetragen wird.
+
 ## Nie erfinden
 
 `metrics` liefert `cpuUsagePercent: null`, wenn nichts es misst, und sagt

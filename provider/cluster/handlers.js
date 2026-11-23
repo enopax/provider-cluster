@@ -285,12 +285,18 @@ async function metrics(input) {
 
     // Namen, nicht nur Zahlen. Die Console zeigt waehrend des Baus, welche
     // Maschine gerade dazukommt; "2 von 3" sagt das nicht.
+    // Die Auslastung, wenn der Kindcluster sie messen kann.
+    const usage = await nodeUsage(childKc, items);
+
     const named = items.map((n) => ({
       name: n.metadata.name,
       ready: isReady(n),
       // Was der Knoten von sich sagt - nicht abgeleitet.
       kubeletVersion: (n.status && n.status.nodeInfo && n.status.nodeInfo.kubeletVersion) || null,
       createdAt: n.metadata.creationTimestamp || null,
+      // Gemessen, und `null`, wenn der metrics-server gerade nicht liefert.
+      cpuPercent: (usage.nodes.get(n.metadata.name) || {}).cpuPercent ?? null,
+      memPercent: (usage.nodes.get(n.metadata.name) || {}).memPercent ?? null,
     }));
 
     return {
@@ -306,16 +312,105 @@ async function metrics(input) {
         totalNodes: items.length,
         readyNodes: named.filter((n) => n.ready).length,
         pods: (pods.items || []).length,
-        // Auslastung braucht metrics-server im Kindcluster. Ohne ihn wird sie
-        // nicht geraten, sondern weggelassen - die Console hat dafuer einen
-        // eigenen Leerzustand.
-        cpuUsagePercent: null,
-        memoryUsagePercent: null,
+        // Gemessen, gegen `allocatable` gerechnet. `null`, wenn der
+        // metrics-server im Kindcluster gerade nicht liefert - unbekannt ist
+        // nicht null, und die Console hat dafuer einen Leerzustand.
+        cpuUsagePercent: usage.cpuPercent,
+        memoryUsagePercent: usage.memoryPercent,
       },
     };
   } catch (error) {
     return { success: false, error: messageOf(error) };
   }
+}
+
+/**
+ * Die Auslastung der Knoten, wenn der Kindcluster sie messen kann.
+ *
+ * `metrics-server` ist in beiden Varianten schon da - k0s bringt ihn mit, und
+ * `kubectl top nodes` liefert im Kindcluster echte Zahlen. Die
+ * Vorgaengerfassung behauptete hier das Gegenteil und gab `null` zurueck,
+ * mit dem Kommentar, es fehle der metrics-server. Das war nicht gemessen,
+ * sondern vermutet.
+ *
+ * Gerechnet wird gegen `allocatable`, nicht gegen `capacity`: was das System
+ * sich reserviert, kann der Kunde nicht benutzen, und ein Prozentwert gegen
+ * die Rohkapazitaet sieht harmloser aus als er ist.
+ *
+ * `null`, wenn die Messung nicht da ist - etwa weil der metrics-server neu
+ * startet. Dann ist es unbekannt, und unbekannt ist nicht null.
+ */
+async function nodeUsage(childKc, nodes, read) {
+  let measured;
+  try {
+    // Die Messquelle ist einschiebbar, damit die Rechnung ohne Cluster
+    // pruefbar ist - sie ist der Teil, der falsch sein kann.
+    measured = read
+      ? await read()
+      : await new k8s.Metrics(childKc).getNodeMetrics();
+  } catch (error) {
+    // Kein Grund zur Sorge und kein Grund zu raten: die Messung fehlt.
+    return { nodes: new Map(), cpuPercent: null, memoryPercent: null };
+  }
+
+  const quantity = (value) => {
+    if (!value) return 0;
+    // CPU kommt als `252m` oder `1`, Speicher als `1330Mi` oder `1234567Ki`.
+    const match = /^(\d+(?:\.\d+)?)([a-zA-Z]*)$/.exec(String(value));
+    if (!match) return 0;
+    const amount = Number(match[1]);
+    const unit = match[2];
+    const factors = {
+      '': 1, n: 1e-9, u: 1e-6, m: 1e-3,
+      Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4,
+      K: 1e3, M: 1e6, G: 1e9, T: 1e12,
+    };
+    return amount * (factors[unit] ?? 1);
+  };
+
+  const allocatable = new Map(
+    (nodes || []).map((n) => [
+      n.metadata.name,
+      {
+        cpu: quantity(n.status && n.status.allocatable && n.status.allocatable.cpu),
+        memory: quantity(n.status && n.status.allocatable && n.status.allocatable.memory),
+      },
+    ]),
+  );
+
+  const perNode = new Map();
+  let cpuUsed = 0;
+  let cpuTotal = 0;
+  let memUsed = 0;
+  let memTotal = 0;
+
+  for (const item of (measured && measured.items) || []) {
+    const name = item.metadata.name;
+    const limits = allocatable.get(name);
+    if (!limits || !limits.cpu || !limits.memory) continue;
+
+    const cpu = quantity(item.usage && item.usage.cpu);
+    const memory = quantity(item.usage && item.usage.memory);
+
+    perNode.set(name, {
+      cpuPercent: Math.round((cpu / limits.cpu) * 100),
+      memPercent: Math.round((memory / limits.memory) * 100),
+    });
+
+    cpuUsed += cpu;
+    cpuTotal += limits.cpu;
+    memUsed += memory;
+    memTotal += limits.memory;
+  }
+
+  return {
+    nodes: perNode,
+    // Ueber den ganzen Cluster, gewichtet nach Kapazitaet - nicht der
+    // Mittelwert der Prozentwerte. Zwei Knoten verschiedener Groesse ergaeben
+    // sonst eine Zahl, die keiner Maschine entspricht.
+    cpuPercent: cpuTotal ? Math.round((cpuUsed / cpuTotal) * 100) : null,
+    memoryPercent: memTotal ? Math.round((memUsed / memTotal) * 100) : null,
+  };
 }
 
 /**
@@ -440,4 +535,6 @@ module.exports = {
   list,
   setClient,
   summarise,
+  /** Nur fuer Tests: die Rechnung ohne Cluster. */
+  __nodeUsage: nodeUsage,
 };

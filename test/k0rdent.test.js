@@ -348,3 +348,54 @@ test('ein fertiger Cluster ist fertig, auch wenn Dienste noch zaehlen', () => {
   assert.strictEqual(state.status, 'active');
   assert.strictEqual(state.ready, true);
 });
+
+test('die Auslastung wird gemessen, nicht geraten', async () => {
+  const { setClient, metrics, __nodeUsage } = require('../provider/cluster/handlers');
+
+  // Zwei Knoten verschiedener Groesse. Gerechnet wird gegen `allocatable`,
+  // nicht gegen `capacity`: was das System sich reserviert, kann der Kunde
+  // nicht benutzen.
+  const nodes = [
+    {
+      metadata: { name: 'gross' },
+      status: { allocatable: { cpu: '4', memory: '8Gi' } },
+    },
+    {
+      metadata: { name: 'klein' },
+      status: { allocatable: { cpu: '2', memory: '4Gi' } },
+    },
+  ];
+  const measured = {
+    items: [
+      { metadata: { name: 'gross' }, usage: { cpu: '2', memory: '4Gi' } },
+      { metadata: { name: 'klein' }, usage: { cpu: '100m', memory: '512Mi' } },
+    ],
+  };
+
+  const usage = await __nodeUsage({ makeApiClient: () => ({}) }, nodes, async () => measured);
+
+  // Je Knoten: 2 von 4 Kernen, 100m von 2 Kernen.
+  assert.strictEqual(usage.nodes.get('gross').cpuPercent, 50);
+  assert.strictEqual(usage.nodes.get('klein').cpuPercent, 5);
+
+  // Ueber den Cluster nach Kapazitaet gewichtet: 2.1 von 6 Kernen = 35 %.
+  // Der Mittelwert der Prozentwerte waere 27,5 - eine Zahl, die keiner
+  // Maschine entspricht.
+  assert.strictEqual(usage.cpuPercent, 35);
+
+  setClient(null);
+});
+
+test('ohne Messung bleibt die Auslastung unbekannt', async () => {
+  const { __nodeUsage } = require('../provider/cluster/handlers');
+
+  // Der metrics-server startet neu, oder es gibt ihn nicht. Unbekannt ist
+  // nicht null: eine 0 liest sich wie ein leerer Cluster.
+  const usage = await __nodeUsage({ makeApiClient: () => ({}) }, [], async () => {
+    throw new Error('the server could not find the requested resource');
+  });
+
+  assert.strictEqual(usage.cpuPercent, null);
+  assert.strictEqual(usage.memoryPercent, null);
+  assert.strictEqual(usage.nodes.size, 0);
+});
