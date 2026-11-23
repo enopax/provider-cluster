@@ -20,28 +20,59 @@ const PLURAL = 'clusterdeployments';
 const DEFAULT_NAMESPACE = process.env.KCM_NAMESPACE || 'kcm-system';
 
 /**
- * Die Stellen, an denen sich die Anbieter unterscheiden.
+ * Die Konfigurationssprachen der Vorlagen.
  *
- * Die Vorlagen sind strukturgleich - region, controlPlaneNumber,
- * workersNumber, k0s.version und je ein Maschinentyp. Nur die Schluessel fuer
- * Maschinentyp und SSH-Schluessel heissen verschieden.
+ * Der Dialekt haengt an der Vorlagenfamilie, nicht am Anbieter. Zu Hetzner
+ * gehoeren zwei gueltige Familien, und sie sind sich in fast keinem Feld
+ * einig:
+ *
+ *   hetzner-standalone-cp   sshKeyNames[]  worker.type   workersNumber
+ *   hetzner-hosted-cp       sshKeyName     worker.serverType  worker.replicas
+ *
+ * Die Vorgaengerfassung hielt die Sprache am Anbieternamen fest und konnte
+ * damit nur eine der beiden bauen. Welchen Dialekt eine Vorlage spricht,
+ * weiss console-api aus provider_templates und schickt es mit.
+ *
+ * Belegt ist bislang nur HETZNER_STANDALONE: damit laeuft
+ * ep-eu1-fsn1-standalone. HETZNER_HOSTED ist beschrieben, aber ungebaut, und
+ * steht deshalb unten bei den noch nicht unterstuetzten.
  */
-const SHAPES = {
-  hetzner: {
+const DIALECTS = {
+  HETZNER_STANDALONE: {
     machineTypeKey: 'type',
     // Pflicht. Ohne scheitert nicht das ClusterDeployment - das nimmt die
     // API an -, sondern erst der Helm-Install mit
-    // "HetznerCluster ... spec.sshKeys: Required value". Deshalb hier
-    // abfangen, bevor ein Objekt entsteht, das nie gebaut werden kann.
+    // "HetznerCluster ... spec.sshKeys: Required value".
     sshKeysRequired: true,
     sshKeys: (names) => ({ sshKeyNames: names }),
+    // Ebenfalls Pflicht, und ebenfalls erst spaet sichtbar: die Vorlage hat
+    // `tokenRef.name: ""` als Vorgabe und nennt den Schluessel
+    // `hcloud-token`, unser Secret fuehrt ihn als `HCLOUD_TOKEN`. Fehlt es,
+    // installiert Helm erfolgreich und CAPH meldet danach
+    // "HCloudTokenAvailable: invalid or not specified hcloud token".
+    tokenRefRequired: true,
   },
-  aws: {
+  AWS_STANDALONE: {
     machineTypeKey: 'instanceType',
     sshKeysRequired: false,
     // AWS nimmt genau einen; mehrere waeren ein stiller Datenverlust.
     sshKeys: (names) => (names.length ? { sshKeyName: names[0] } : {}),
+    tokenRefRequired: false,
   },
+};
+
+/**
+ * Dialekte, die wir kennen, aber nicht bauen.
+ *
+ * HETZNER_HOSTED ist der PaaS-Cluster: die Steuerungsebene laeuft als Pods
+ * auf dem regionalen Cluster. Die Vorlage verlangt dafuer mehr als andere
+ * Feldnamen - einen DNS-Namen je Cluster fuer die API und fuer Konnectivity,
+ * und Cilium als Service. Solange das nicht steht, ist eine Absage ehrlicher
+ * als ein Objekt, das k0rdent nicht fertigbauen kann.
+ */
+const PLANNED_DIALECTS = {
+  HETZNER_HOSTED:
+    'the PaaS cluster needs per-cluster DNS names (api./k.) and Cilium as a service; not wired yet',
 };
 
 /**
@@ -49,7 +80,8 @@ const SHAPES = {
  *
  * @param {object} req
  * @param {string} req.name            Clustername, zugleich der Name des Objekts
- * @param {string} req.providerId      hetzner | aws
+ * @param {string} req.providerId      hetzner | aws, nur fuer Meldungen
+ * @param {string} req.dialect         HETZNER_STANDALONE | AWS_STANDALONE
  * @param {string} req.template        k0rdent-ClusterTemplate
  * @param {string} req.credential      k0rdent-Credential
  * @param {string} req.region          Standort beim Anbieter: fsn1, eu-central-1
@@ -57,25 +89,59 @@ const SHAPES = {
  * @param {string} req.controlPlaneType
  * @param {number} req.workersNumber
  * @param {string} req.workerType
- * @param {string} [req.k8sVersion]
+ * @param {string} [req.k0sVersion]   k0s-Schreibweise: v1.35.4+k0s.0
+ * @param {string} [req.tokenSecretName]
+ * @param {string} [req.tokenSecretKey]
  * @param {string[]} [req.sshKeyNames]
  * @param {string} [req.organisationName]
  * @param {string} [req.projectName]
  * @param {boolean} [req.dryRun]       Nur pruefen lassen, nichts bauen
  */
 function buildClusterDeployment(req) {
-  const shape = SHAPES[req.providerId];
+  if (!req.dialect) {
+    throw new Error('Missing required field: dialect (which configuration language the template speaks)');
+  }
+  if (PLANNED_DIALECTS[req.dialect]) {
+    throw new Error(`Dialect "${req.dialect}" is not supported yet: ${PLANNED_DIALECTS[req.dialect]}`);
+  }
+  const shape = DIALECTS[req.dialect];
   if (!shape) {
     throw new Error(
-      `Unknown provider "${req.providerId}". Known: ${Object.keys(SHAPES).join(', ')}`,
+      `Unknown dialect "${req.dialect}". Known: ${Object.keys(DIALECTS).join(', ')}`,
     );
   }
 
   const sshKeyNames = req.sshKeyNames || [];
   if (shape.sshKeysRequired && sshKeyNames.length === 0) {
     throw new Error(
-      `Provider "${req.providerId}" requires at least one SSH key name; none was given. ` +
+      `Dialect "${req.dialect}" requires at least one SSH key name; none was given. ` +
         'They belong to the project behind the credential — see provider_regions.sshKeyNames.',
+    );
+  }
+
+  if (shape.tokenRefRequired && !(req.tokenSecretName && req.tokenSecretKey)) {
+    throw new Error(
+      `Dialect "${req.dialect}" requires tokenSecretName and tokenSecretKey; ` +
+        'without them the Helm install succeeds and CAPH then reports ' +
+        '"HCloudTokenAvailable: invalid or not specified hcloud token in Hetzner secret". ' +
+        'See provider_regions.tokenSecretName.',
+    );
+  }
+
+  // Die Vorlage baut aus der k0s-Version eine Download-URL; `1.30.4` ergibt
+  // eine, die es nicht gibt, und das faellt erst auf, wenn die Maschine schon
+  // laeuft und bezahlt wird.
+  if (req.k0sVersion && !/^v\d+\.\d+\.\d+\+k0s\.\d+$/.test(req.k0sVersion)) {
+    throw new Error(
+      `"${req.k0sVersion}" is not a k0s version; expected something like v1.35.4+k0s.0`,
+    );
+  }
+
+  if (req.workersNumber === undefined || req.workersNumber === null) {
+    throw new Error(
+      'Missing required field: workersNumber. It used to arrive as workerNodes, was never ' +
+        "read, and the chart's default of 2 stood in for it — so a cluster came up with a " +
+        'worker count nobody chose.',
     );
   }
 
@@ -90,9 +156,13 @@ function buildClusterDeployment(req) {
     ...shape.sshKeys(sshKeyNames),
   };
 
+  if (shape.tokenRefRequired) {
+    config.tokenRef = { name: req.tokenSecretName, key: req.tokenSecretKey };
+  }
+
   // Nur setzen, wenn gewuenscht: ohne Angabe nimmt die Vorlage ihre eigene
   // Version, und die ist verlaesslicher als eine, die wir raten.
-  if (req.k8sVersion) config.k0s = { version: req.k8sVersion };
+  if (req.k0sVersion) config.k0s = { version: req.k0sVersion };
 
   return {
     apiVersion: `${GROUP}/${VERSION}`,
@@ -177,7 +247,8 @@ module.exports = {
   VERSION,
   PLURAL,
   DEFAULT_NAMESPACE,
-  SHAPES,
+  DIALECTS,
+  PLANNED_DIALECTS,
   buildClusterDeployment,
   readStatus,
 };

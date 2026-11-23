@@ -54,6 +54,26 @@ aufgebaut wuerde und zwischen zwei Aufrufen nichts bleibt.
 ClusterDeployment heraus — und laesst sich ohne Cluster testen. `handlers.js`
 ist alles, was mit der Kubernetes-API spricht.
 
+## Der Dialekt haengt an der Vorlage, nicht am Anbieter
+
+`DIALECTS` in `k0rdent.js` ist nach Vorlagenfamilie geordnet, nicht nach
+Anbieter. Zu Hetzner gehoeren zwei gueltige Familien, und sie sind sich in
+fast keinem Feld einig:
+
+```
+HETZNER_STANDALONE   sshKeyNames[]  worker.type        workersNumber  tokenRef
+HETZNER_HOSTED       sshKeyName     worker.serverType  worker.replicas
+```
+
+Die Vorgaengerfassung hielt die Felder am Anbieternamen fest und konnte damit
+nur eine der beiden bauen. Welchen Dialekt eine Vorlage spricht, weiss
+console-api aus `provider_templates` und schickt es mit.
+
+`PLANNED_DIALECTS` ist die ehrliche Liste des Ungebauten: HETZNER_HOSTED - der
+PaaS-Cluster - braucht einen DNS-Namen je Cluster fuer API und Konnectivity
+und Cilium als Service. Solange das nicht steht, ist eine Absage besser als
+ein Objekt, das k0rdent nicht fertigbauen kann.
+
 ## Was hier nicht entschieden wird
 
 Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
@@ -79,6 +99,19 @@ danach lehnte CAPH den gerenderten `HetznerCluster` ab, weil `spec.sshKeys`
 fehlte. Zwischen "die API nimmt es an" und "k0rdent kann es bauen" liegt ein
 Schritt, den der Dry-Run nicht sieht.
 
-Was dagegen hilft: Pflichtfelder je Anbieter in `SHAPES` fuehren und vor dem
-Anlegen pruefen - so wie `sshKeysRequired` fuer Hetzner. Jede neue
+Beim zweiten Lauf passierte dasselbe eine Etage weiter: der Helm-Install
+gelang, und dann meldete CAPH `HCloudTokenAvailable: invalid or not specified
+hcloud token in Hetzner secret`. Die Vorlage hat fuer `tokenRef` keinen
+brauchbaren Vorgabewert - der Name ist leer, und den Schluessel nennt sie
+`hcloud-token`, waehrend unser Secret ihn als `HCLOUD_TOKEN` fuehrt.
+
+Was dagegen hilft: Pflichtfelder je Dialekt in `DIALECTS` fuehren und vor dem
+Anlegen pruefen - `sshKeysRequired`, `tokenRefRequired`, und `workersNumber`
+und die k0s-Schreibweise direkt in `buildClusterDeployment`. Jede neue
 Pflichtangabe gehoert dorthin, sonst findet sie erst der Betrieb.
+
+Und: nachsehen, nicht rekonstruieren. Die bewaehrten Manifeste unter
+`K0Cluster/` - `cluster/terraform/manifests/regions/eu1-fsn1/` und
+`k0cluster/manifests/user-cluster/cluster-standalone.yaml` - zeigen, welche
+Felder ein Cluster wirklich braucht. Beide gescheiterten Laeufe haetten das
+vorher verraten.
