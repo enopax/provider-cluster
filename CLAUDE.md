@@ -1,309 +1,47 @@
 # CLAUDE.md
 
 **AI Assistant Reference File**
-This file provides guidance to Claude Code when working with the Enopax Cluster Provider repository.
+Guidance for working with the Enopax Cluster Provider.
 
 ---
 
-## 📚 Project Overview
+## Was dieser Dienst ist
 
-**Name**: Enopax Cluster Provider
-**Purpose**: Kubernetes cluster provisioning for container orchestration
-**Status**: 🚧 Initial Development - Framework complete, K8s implementation pending
+Eine Fassade vor der Kubernetes-API des Management-Clusters. Er nimmt eine
+Anfrage entgegen, macht daraus ein k0rdent-`ClusterDeployment` und liest
+dessen Zustand zurueck. **Gebaut wird der Cluster von k0rdent**, ueber Cluster
+API und Helm - nicht hier. Es gibt kein kubeadm, kein kubectl und keine
+Bash-Skripte mehr; die frueheren Fassungen dieser Datei beschrieben all das,
+und nichts davon trifft noch zu.
 
-**Core Principle**: Enable container orchestration through easy-to-provision Kubernetes clusters integrated with the Enopax platform.
-
----
-
-## 🚀 Quick Start
-
-### Running the Server
-
-```bash
-# Install dependencies
-pnpm install
-
-# Start server
-pnpm dev
-
-# Server runs on http://localhost:3003
-# API endpoint: /v1/clusters
+```
+console-api ──▶ dieser Dienst ──▶ ClusterDeployment ──▶ k0rdent ──▶ Hetzner
 ```
 
-### Server Architecture
-
-This provider uses the `@enopax/resource-api` npm library for the server framework:
-
-```javascript
-// server.js
-const { createServer } = require('@enopax/resource-api');
-
-const app = createServer({
-  port: 3003,
-  authentication: { enabled: false, apiKey: '' },
-  providers: [{
-    apiVersion: 'v1',
-    endpoint: '/clusters',
-    scriptsFolder: './provider/cluster/scripts'
-  }]
-});
-
-app.listen(3003);
-```
-
-### Project Structure
+### Aufbau
 
 ```
 provider-cluster/
-├── server.js                  # Server using @enopax/resource-api
-├── package.json               # Dependencies
-├── provider/
-│   └── cluster/
-│       ├── config.json        # Provider configuration
-│       ├── scripts/           # CRUD operation scripts
-│       │   ├── common.sh
-│       │   ├── provision.sh
-│       │   ├── list.sh
-│       │   ├── status.sh
-│       │   ├── metrics.sh
-│       │   ├── update.sh
-│       │   └── deprovision.sh
-│       └── data/              # Cluster storage
-└── README.md
+├── server.js                      @enopax/resource-api mit handlers statt scriptsFolder
+├── Dockerfile
+├── deploy/rbac.yaml               ServiceAccount, Role, Binding, Token
+└── provider/cluster/
+    ├── config.json
+    ├── k0rdent.js                 reine Uebersetzung, ohne Cluster testbar
+    └── handlers.js                alles, was mit der Kubernetes-API spricht
 ```
 
----
+### Starten
 
-## 🎯 Project Goals
-
-### Primary Objectives
-1. **Cluster Deployment** - Simple provisioning of multi-node Kubernetes clusters
-2. **Container Orchestration** - Deploy and manage containerised applications
-3. **Auto-scaling** - Dynamic scaling of worker nodes
-4. **Health Monitoring** - Real-time cluster health and metrics
-5. **Resource API Integration** - Seamless integration with Enopax ecosystem
-
----
-
-## 🏗️ Architecture
-
-### Technology Stack
-
-**Backend**:
-- Node.js with `@enopax/resource-api`
-- Bash scripts for lifecycle operations
-
-**Kubernetes Stack**:
-- Kubernetes (K8s) for container orchestration
-- kubectl and kubeadm for cluster management
-- Docker/containerd for container runtime
-
-**Orchestration**:
-- Control plane (API server, scheduler, controller)
-- Worker nodes with kubelet
-- Pod networking and service discovery
-
----
-
-## 📂 Implementation Details
-
-### Bash Scripts
-
-**provision.sh**:
-- Creates cluster directory structure
-- Generates unique cluster ID
-- Stores configuration in cluster.json
-- TODO: Initialize K8s cluster with kubeadm
-
-**status.sh**:
-- Reads cluster configuration
-- Returns cluster status
-- TODO: Query actual K8s cluster health (kubectl get nodes)
-
-**metrics.sh**:
-- Calculates uptime
-- Measures resource usage
-- TODO: Get real metrics from K8s (kubectl top nodes/pods)
-
-**update.sh**:
-- Updates cluster configuration
-- Scales worker node count
-- TODO: Apply changes to running cluster (kubectl scale)
-
-**list.sh**:
-- Lists all clusters for org/project
-- Filters by organisation and project slugs
-
-**deprovision.sh**:
-- Removes cluster directory
-- TODO: Stop Docker containers and cleanup
-
----
-
-## 🔧 Resource API Integration
-
-### Standard Endpoints
-
-Following the Enopax Resource API pattern:
-
-**Discovery**:
 ```bash
-GET /providers/info
-# Returns cluster provider metadata
+npm install
+KUBECONFIG=<kubeconfig des Management-Clusters> npm start
 ```
 
-**Provision**:
-```bash
-POST /v1/clusters
-# Input: name, workerNodes, k8sVersion, org, project
-# Output: cluster ID, status
-```
-
-**Status**:
-```bash
-GET /v1/clusters/:id
-# Returns: cluster status, configuration
-```
-
-**Metrics**:
-```bash
-GET /v1/clusters/:id/metrics
-# Returns: uptime, nodes, pods, CPU/memory usage
-```
-
-**Update**:
-```bash
-PUT /v1/clusters/:id
-# Update: worker node count
-```
-
-**Delete**:
-```bash
-DELETE /v1/clusters/:id
-# Stop cluster and clean up
-```
+Im Cluster selbst braucht es kein KUBECONFIG - `handlers.js` nimmt dann das
+Token des Pods.
 
 ---
-
-## 💡 Use Cases
-
-### Container Orchestration
-- Microservices deployment
-- Service discovery and load balancing
-- Auto-scaling based on metrics
-
-### Development & Testing
-- Development environments
-- CI/CD integration
-- Ephemeral test clusters
-
-### Production Workloads
-- High availability applications
-- Rolling updates
-- Resource quotas and limits
-
----
-
-## 📋 Development Guidelines
-
-### Code Standards
-- **Language**: Bash for scripts, Node.js for server
-- **Documentation**: Comprehensive inline comments
-- **Testing**: Manual script testing required
-- **British English**: Consistent spelling throughout
-
-### Workflow
-1. **Branching**: Feature branches for all changes
-2. **Commits**: Semantic commit messages
-3. **Pull Requests**: Required for all changes
-4. **Testing**: Test scripts before committing
-
-### Best Practices
-- **Never** expose sensitive data in logs
-- **Always** validate input in bash scripts
-- **Always** use proper error handling
-- **Never** assume cluster is running (check status)
-- **Always** clean up resources on deprovision
-
----
-
-## 🚀 Implementation Phases
-
-### Phase 1: Foundation (Complete)
-- ✅ Server using `@enopax/resource-api`
-- ✅ Bash script structure
-- ✅ Basic CRUD operations (file-based)
-- ✅ Documentation
-
-### Phase 2: K8s Integration (Next)
-- [ ] Kubernetes cluster initialisation with kubeadm
-- [ ] Control plane and worker node deployment
-- [ ] kubectl configuration
-- [ ] Node health monitoring
-
-### Phase 3: Production Features
-- [ ] Dynamic node scaling
-- [ ] Cluster upgrades
-- [ ] Advanced metrics (kubectl top)
-- [ ] Persistent volume management
-
----
-
-## 📚 Documentation
-
-### Project Documentation
-
-- **[README.md](./README.md)** - User-facing documentation
-- **[docs/concept.md](./docs/concept.md)** - Core concepts
-- **[docs/architecture.md](./docs/architecture.md)** - Detailed architecture
-- **[CLAUDE.md](./CLAUDE.md)** - This file
-
-### Related Documentation
-
-- **[Resource API docs](../resource-api/)** - Resource API integration patterns
-- **[Platform docs](../platform/)** - Platform integration
-- **[Orga CLAUDE.md](../orga/CLAUDE.md)** - Organisation structure
-
----
-
-## 🐛 Debugging
-
-### Common Issues
-
-**Cluster not found**:
-- Check ID format: `orgslug-projectslug-name`
-- Verify cluster directory exists
-- Check data path in common.sh
-
-**Provision fails**:
-- Validate input JSON
-- Check for existing cluster with same name
-- Review logs in stderr
-
-**Scripts not executable**:
-```bash
-chmod +x provider/cluster/scripts/*.sh
-```
-
----
-
-## 📝 Next Steps
-
-### Immediate Tasks
-1. Implement kubeadm cluster initialisation
-2. Deploy control plane and worker nodes
-3. Generate kubeconfig for access
-4. Implement real metrics gathering (kubectl)
-
-### Future Enhancements
-1. High availability control plane
-2. Multi-cloud deployment
-3. Advanced monitoring dashboard
-4. Helm chart support
-
----
-
-*This provider is in initial development. Server framework is complete, K8s integration is pending.*
 
 ## Handler statt Skripte
 
@@ -329,9 +67,18 @@ baut eine zweite Kopie derselben Zuordnung, und zwei Kopien laufen auseinander.
 Vorgaengerfassung schrieb an beiden Stellen 0 - und ein Cluster mit 0 % CPU
 liest sich wie ein leerer, nicht wie ein unbekannter.
 
-## Pruefen ohne zu bauen
+## Was der Dry-Run beweist - und was nicht
 
-Ein ClusterDeployment laesst sich serverseitig im Dry-Run anlegen
-(`dryRun: 'All'` an der Kubernetes-API): die Admission-Webhooks pruefen alles,
-gespeichert wird nichts, und es entsteht kein Server. So ist die Uebersetzung
-gegen den echten Management-Cluster geprueft, ohne Geld auszugeben.
+`dryRun: 'All'` an der Kubernetes-API laesst die Admission-Webhooks das
+ClusterDeployment pruefen, ohne es zu speichern und ohne einen Server
+anzulegen. Das faengt Tippfehler, falsche Vorlagennamen und unbekannte Felder.
+
+**Es faengt nicht, was die Helm-Vorlage daraus macht.** Der erste echte
+Durchlauf scheiterte genau dort: das ClusterDeployment war gueltig, und
+danach lehnte CAPH den gerenderten `HetznerCluster` ab, weil `spec.sshKeys`
+fehlte. Zwischen "die API nimmt es an" und "k0rdent kann es bauen" liegt ein
+Schritt, den der Dry-Run nicht sieht.
+
+Was dagegen hilft: Pflichtfelder je Anbieter in `SHAPES` fuehren und vor dem
+Anlegen pruefen - so wie `sshKeysRequired` fuer Hetzner. Jede neue
+Pflichtangabe gehoert dorthin, sonst findet sie erst der Betrieb.
