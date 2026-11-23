@@ -130,7 +130,16 @@ function buildHostedConfig(req) {
     // `core` ist der statische Knotenpool, `worker` der skalierbare. Die
     // belegte Fassung liess `core` auf der Chart-Vorgabe stehen - hier steht
     // er ausdruecklich, damit der Maschinentyp unserer ist und die Knotenzahl
-    // bekannt. Ein PaaS-Cluster hat damit `workersNumber + 1` Knoten.
+    // bekannt.
+    //
+    // Hier stand: "Ein PaaS-Cluster hat damit `workersNumber + 1` Knoten."
+    // Das ist falsch, und der Irrtum hat enopax/enopax#35 verursacht. Der
+    // ganze core-Pool des Charts steht hinter `{{ if .Values.autoscaling.enabled }}` -
+    // MachineDeployment, MachineTemplate und WorkerConfigTemplate. Ohne
+    // Autoskalierung entsteht er nicht, und `core.replicas` rendert nichts.
+    // Belegt an `dev-dose`: `core.replicas: 1` im Objekt, zwei Server bei
+    // Hetzner, keiner davon ein core. Wer Autoskalierung einschaltet, zaehlt
+    // ihn mit - bis dahin ist die Knotenzahl genau `workersNumber`.
     core: machine(req.workerType, 1),
     worker: machine(req.workerType, req.workersNumber),
     ingress: { enabled: true, apiHost, konnectivityHost },
@@ -440,6 +449,49 @@ function readStatus(deployment) {
   };
 }
 
+/**
+ * Wo die Arbeiterzahl eines Clusters steht.
+ *
+ * Nicht an einer Stelle, sondern an zwei - und welche es ist, haengt an der
+ * Vorlage: der standalone-Chart nimmt `workersNumber`, der hosted-Chart
+ * `worker.replicas`. `buildHostedConfig` und `buildPrivateConfig` wissen das
+ * beim Anlegen; beim Aendern wusste es niemand, und deshalb schrieb `update`
+ * jahrelang `workersNumber` auch in PaaS-Cluster, wo kein Chart es liest.
+ *
+ * Festgemacht am **Aufbau des Objekts**, nicht am Anbieternamen oder am
+ * Vorlagentext: wer eine Vorlage austauscht, aendert damit den Feldnamen mit,
+ * und der Name der Vorlage sagt nichts darueber, wie ihre Werte heissen.
+ */
+function workersOf(config) {
+  const c = config || {};
+  if (c.worker && c.worker.replicas !== undefined) return c.worker.replicas;
+  return c.workersNumber;
+}
+
+/**
+ * Das Merge-Patch, das die Arbeiterzahl eines bestehenden Clusters setzt.
+ *
+ * Braucht das Objekt, nicht nur seine Kennung: der Pfad ist erst bekannt,
+ * wenn man gesehen hat, wie seine Konfiguration aufgebaut ist.
+ *
+ * Kennt es den Aufbau nicht, wird **nichts** geschrieben. Ein Patch auf einen
+ * erfundenen Pfad scheitert nicht - `values.schema.json` der Charts setzt kein
+ * `additionalProperties: false`, die Kubernetes-API nimmt den Schluessel an,
+ * und niemand liest ihn. Ein Fehler mit Grund ist besser als ein Erfolg, der
+ * keine Maschine erreicht.
+ */
+function scalePatch(deployment, workers) {
+  const config = (deployment && deployment.spec && deployment.spec.config) || {};
+
+  if (config.worker) return { spec: { config: { worker: { replicas: workers } } } };
+  if (config.workersNumber !== undefined) return { spec: { config: { workersNumber: workers } } };
+
+  throw new Error(
+    'Cannot scale this cluster: its config has neither worker.replicas nor workersNumber ' +
+      `(template "${(deployment && deployment.spec && deployment.spec.template) || 'unknown'}")`,
+  );
+}
+
 module.exports = {
   GROUP,
   VERSION,
@@ -449,4 +501,6 @@ module.exports = {
   PLANNED_DIALECTS,
   buildClusterDeployment,
   readStatus,
+  workersOf,
+  scalePatch,
 };
