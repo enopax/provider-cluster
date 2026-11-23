@@ -62,17 +62,37 @@ const DIALECTS = {
 };
 
 /**
- * Dialekte, die wir kennen, aber nicht bauen.
+ * Dialekte, die wir kennen und noch nicht erzeugen.
  *
- * HETZNER_HOSTED ist der PaaS-Cluster: die Steuerungsebene laeuft als Pods
- * auf dem regionalen Cluster. Die Vorlage verlangt dafuer mehr als andere
- * Feldnamen - einen DNS-Namen je Cluster fuer die API und fuer Konnectivity,
- * und Cilium als Service. Solange das nicht steht, ist eine Absage ehrlicher
- * als ein Objekt, das k0rdent nicht fertigbauen kann.
+ * HETZNER_HOSTED ist der PaaS-Cluster. Er ist **nicht unerprobt** - er hat
+ * reproduzierbar gebaut: `eu1f-test01` erreichte Ready 5/5 mit Steuerungsebene
+ * und etcd auf zwei regionalen Workern und null kmc-Pods auf dem
+ * Management-Cluster. Die bewaehrte Fassung steht in
+ * `K0Cluster/cluster/terraform/manifests/eu1f-test01.yaml`; der Betrieb des
+ * regionalen Clusters traegt die Voraussetzungen dafuer bis heute.
+ *
+ * Was fehlt, ist allein die Uebersetzung hier. Dazu gehoert mehr als andere
+ * Feldnamen:
+ *
+ *   - `ingress.apiHost` und `ingress.konnectivityHost`, je Cluster und je
+ *     Region: `api.<name>.<region>.k8s.enopax.io`. Ohne sie initialisiert die
+ *     Steuerungsebene nicht.
+ *   - `serviceSpec` mit zwei Diensten: cert-manager (die Vorlage bringt es
+ *     nicht mit, KOFs otel-operator braucht die Certificate-CRDs) und Cilium,
+ *     dessen `k8sServiceHost` denselben apiHost traegt.
+ *   - die KOF-Labels, die das Kind seinem regionalen Cluster und seinem
+ *     Mandanten zuordnen.
+ *   - `clusterNetwork.pods.cidrBlock` - Singular, waehrend standalone
+ *     `cidrBlocks` als Liste verlangt.
+ *
+ * Und eine Falle, die Geld kostet: **1.5.0 baut nicht.** Dort fehlte
+ * `HetznerCluster.spec.sshKeys`; 1.5.1 stellt es wieder her. Die Vorlage in
+ * provider_templates muss 1-5-1 sein.
  */
 const PLANNED_DIALECTS = {
   HETZNER_HOSTED:
-    'the PaaS cluster needs per-cluster DNS names (api./k.) and Cilium as a service; not wired yet',
+    'the PaaS cluster is proven (eu1f-test01 reached Ready 5/5) but not translated here yet: ' +
+    'it needs per-cluster ingress hosts, a serviceSpec with cert-manager and Cilium, and the KOF labels',
 };
 
 /**

@@ -69,10 +69,18 @@ Die Vorgaengerfassung hielt die Felder am Anbieternamen fest und konnte damit
 nur eine der beiden bauen. Welchen Dialekt eine Vorlage spricht, weiss
 console-api aus `provider_templates` und schickt es mit.
 
-`PLANNED_DIALECTS` ist die ehrliche Liste des Ungebauten: HETZNER_HOSTED - der
-PaaS-Cluster - braucht einen DNS-Namen je Cluster fuer API und Konnectivity
-und Cilium als Service. Solange das nicht steht, ist eine Absage besser als
-ein Objekt, das k0rdent nicht fertigbauen kann.
+`PLANNED_DIALECTS` ist die Liste dessen, was wir noch nicht *uebersetzen* -
+nicht dessen, was nicht geht. HETZNER_HOSTED, der PaaS-Cluster, hat
+reproduzierbar gebaut: `eu1f-test01` erreichte Ready 5/5 mit Steuerungsebene
+und etcd auf regionalen Workern. Nachzulesen in
+`K0Cluster/cluster/terraform/manifests/eu1f-test01.yaml` und
+`K0Cluster/cluster/docs/progress_log.md`.
+
+Was zur Uebersetzung gehoert, steht im Kommentar an `PLANNED_DIALECTS`. Zwei
+Dinge daraus sind leicht zu uebersehen: die Vorlage **1.5.0 baut nicht** (dort
+fehlte `HetznerCluster.spec.sshKeys`, 1.5.1 stellt es wieder her), und
+`clusterNetwork.pods.cidrBlock` heisst im hosted-Dialekt Singular, waehrend
+standalone `cidrBlocks` als Liste nimmt.
 
 ## Was hier nicht entschieden wird
 
