@@ -16,6 +16,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { createServer } = require('@enopax/resource-api');
+const { registerRoutes } = require('../provider/cluster/routes');
 
 const API_KEY = 'test-key';
 const ID = 'kcm-system/some-cluster';
@@ -47,6 +48,16 @@ function serve() {
         },
       },
     ],
+  });
+
+  registerRoutes(app, {
+    kubeconfig: async (input) => {
+      seen.push({ op: 'kubeconfig', id: input.id });
+      if (input.id.endsWith('building')) {
+        return { success: false, pending: true, error: 'still being built' };
+      }
+      return { success: true, id: input.id, via: 'ep-eu1-fsn1-standalone', kubeconfig: 'apiVersion: v1\n' };
+    },
   });
 
   return new Promise((resolve) => {
@@ -113,6 +124,53 @@ test('Skalieren und Loeschen erreichen ihre Kennung ebenfalls', async () => {
       ['update', 'deprovision'],
     );
     for (const s of seen) assert.strictEqual(s.id, ID);
+  } finally {
+    server.close();
+  }
+});
+
+test('die kubeconfig haengt an einer eigenen Route und kommt heraus', async () => {
+  const { base, seen, server } = await serve();
+  try {
+    const response = await call(base, `/v1/clusters/${encodeURIComponent(ID)}/kubeconfig`);
+    assert.strictEqual(response.status, 200);
+
+    const body = await response.json();
+    assert.match(body.kubeconfig, /^apiVersion: v1/);
+    // Ueber welchen Cluster sie gefunden wurde, gehoert in die Antwort: beim
+    // PaaS-Cluster ist das der regionale.
+    assert.strictEqual(body.via, 'ep-eu1-fsn1-standalone');
+    assert.deepStrictEqual(seen, [{ op: 'kubeconfig', id: ID }]);
+  } finally {
+    server.close();
+  }
+});
+
+test('ein Cluster im Bau gibt 409, keine leere Datei', async () => {
+  const { base, server } = await serve();
+  try {
+    const response = await call(
+      base,
+      `/v1/clusters/${encodeURIComponent('kcm-system/building')}/kubeconfig`,
+    );
+    // Nichts ist falsch - es ist nur noch nicht da. Eine leere Datei waere
+    // schlimmer als eine Absage: sie sieht aus wie ein Zugang.
+    assert.strictEqual(response.status, 409);
+    const body = await response.json();
+    assert.strictEqual(body.success, false);
+    assert.strictEqual(body.kubeconfig, undefined);
+  } finally {
+    server.close();
+  }
+});
+
+test('ohne API-Key kommt die kubeconfig nicht heraus', async () => {
+  const { base, server } = await serve();
+  try {
+    // Die Route erbt authMiddleware ueber app.use - das ist der Grund, warum
+    // sie dort und nicht in einem eigenen Server haengt.
+    const response = await fetch(`${base}/v1/clusters/${encodeURIComponent(ID)}/kubeconfig`);
+    assert.strictEqual(response.status, 401);
   } finally {
     server.close();
   }

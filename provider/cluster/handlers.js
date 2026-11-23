@@ -318,6 +318,39 @@ async function metrics(input) {
   }
 }
 
+/**
+ * Die kubeconfig des Kindclusters, zum Herunterladen.
+ *
+ * Keine der sechs CRUD-Operationen, sondern eine eigene Route - und das mit
+ * Absicht: ein Cluster-Admin-Zugang darf nicht in `status` oder `metrics`
+ * mitreisen. Diese Antworten werden geloggt und zwischengespeichert, und was
+ * dort einmal steht, ist nicht mehr einzufangen.
+ *
+ * Deshalb liegt sie auch nicht im Rueckgabewert von `summarise`.
+ */
+async function kubeconfig(input) {
+  if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
+
+  let found;
+  try {
+    found = await childKubeconfig(input.id);
+  } catch (error) {
+    return { success: false, error: messageOf(error) };
+  }
+
+  if (!found.kubeconfig) {
+    // Waehrend des Baus gibt es sie noch nicht. Eine leere Datei waere
+    // schlimmer als eine Absage: sie sieht aus wie ein Zugang.
+    return {
+      success: false,
+      error: 'The cluster is still being built; its kubeconfig does not exist yet.',
+      pending: true,
+    };
+  }
+
+  return { success: true, id: input.id, via: found.via, kubeconfig: found.kubeconfig };
+}
+
 async function update(input) {
   if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
   if (input.workerNodes === undefined) {
@@ -397,4 +430,14 @@ function messageOf(error) {
   return error.message || String(error);
 }
 
-module.exports = { provision, status, metrics, update, deprovision, list, setClient, summarise };
+module.exports = {
+  provision,
+  status,
+  metrics,
+  kubeconfig,
+  update,
+  deprovision,
+  list,
+  setClient,
+  summarise,
+};

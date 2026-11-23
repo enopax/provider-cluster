@@ -6,6 +6,7 @@
 
 const { createServer } = require('@enopax/resource-api');
 const handlers = require('./provider/cluster/handlers');
+const { registerRoutes } = require('./provider/cluster/routes');
 
 // Create server with cluster provider configuration
 const app = createServer({
@@ -28,6 +29,9 @@ const app = createServer({
   ]
 });
 
+// Die Routen, die der Rahmen nicht kennt - siehe provider/cluster/routes.js.
+registerRoutes(app, handlers);
+
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || 'localhost';
 
@@ -42,6 +46,7 @@ app.listen(PORT, HOST, () => {
   console.log(`    - POST   /v1/clusters`);
   console.log(`    - GET    /v1/clusters/:id`);
   console.log(`    - GET    /v1/clusters/:id/metrics`);
+  console.log(`    - GET    /v1/clusters/:id/kubeconfig`);
   console.log(`    - PUT    /v1/clusters/:id`);
   console.log(`    - DELETE /v1/clusters/:id`);
   console.log(`\n`);
