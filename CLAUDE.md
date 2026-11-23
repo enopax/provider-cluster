@@ -5,6 +5,34 @@ Guidance for working with the Enopax Cluster Provider.
 
 ---
 
+## Mehrere Sitzungen arbeiten hier gleichzeitig
+
+Am 2026-11-23 liefen zwei. Inhaltlich ging das gut - verschiedene Themen,
+Rebase ohne einen Konflikt. Kollidiert sind **nur die Versionsnummern**, und
+daraus wurde fast ein ueberschriebenes Image.
+
+Drei Regeln, jede fuer einen Fehler, der wirklich passiert ist:
+
+**Holen, bevor man baut.** `git fetch` als erster Schritt. Wer die
+Versionsnummer gegen das lokale `package.json` waehlt statt gegen `origin`,
+waehlt eine, die schon vergeben ist.
+
+**Niemals einen vorhandenen Image-Tag ueberschreiben.** Vor jedem Push:
+
+```bash
+docker manifest inspect ghcr.io/enopax/provider-cluster:<version> && echo "VERGEBEN"
+```
+
+Ein vorhandener Tag ist das veroeffentlichte Artefakt von jemandem. Git lehnt
+einen Push ab, der etwas verlieren wuerde - **die Registry nicht**, sie nimmt
+ihn stillschweigend an. Am 2026-11-23 lag ein `0.3.4` aus einer Sitzung schon
+in der Registry, und in der anderen lag ein gleichnamiges Image aus einem
+Stand *vor* dem Rebase. Dass es nicht hochgeladen wurde, lag an einem
+abgelaufenen Registry-Token, nicht an Sorgfalt.
+
+**Nach einem Rebase die Versionsnummer neu waehlen.** Die alte gehoert zu dem
+Stand, aus dem sie kam.
+
 ## Was dieser Dienst ist
 
 Eine Fassade vor der Kubernetes-API des Management-Clusters. Er nimmt eine
@@ -173,7 +201,27 @@ Katalogwert sind und bis heute manuell eingerichtet werden
   `ep-eu1-fsn1-childapi` vor `haproxy-ingress`, `external-dns-childapi` und
   das Label `kcm-region-cluster=true` am regionalen ClusterDeployment.
 
-## Was hier nicht entschieden wird## Was hier nicht entschieden wird
+## Die Mandantenkennung entscheidet dieser Dienst nicht
+
+`kof-tenant-id` kommt als `tenantId` von console-api. Hier stand einmal der
+Organisations-Slug, und das war kein Namensfehler, sondern eine
+Sicherheitsentscheidung an der falschen Stelle:
+
+Der `kof-operator` legt je Cluster einen VMUser an, klemmt ihn serverseitig
+auf diese Kennung und legt dessen Zugangsdaten **in den Kindcluster** - die
+Kollektoren schreiben damit. Weil die kubeconfig des Kindclusters an den
+Kunden geht, liest jeder mit Clusterzugang genau das, worauf die Kennung
+klemmt.
+
+Mit der Organisation als Kennung laese ein projektgebundenes Mitglied die
+Telemetrie aller Projekte seiner Organisation. enopax/enopax#39.
+
+Fehlt die Kennung, wird **kein** Label gesetzt - lieber keine Abgrenzung als
+eine falsche. Ohne Label legt der Operator keinen VMUser an; die Telemetrie
+liegt dann im gemeinsamen Mandanten und ist nicht abgegrenzt, aber sie ist
+auch nicht falsch abgegrenzt.
+
+## Was hier nicht entschieden wird
 
 Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
 `provider_regions` und `provider_sizes`. Wer sie hier noch einmal nachschlaegt,
