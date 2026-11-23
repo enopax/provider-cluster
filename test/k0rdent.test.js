@@ -281,3 +281,70 @@ test('die kubeconfig eines PaaS-Kindes wird auf dem Regional gefunden', async ()
 
   setClient(null);
 });
+
+test('ein Cluster im Bau ist nicht gescheitert', () => {
+  // Genau der Zustand von dev-dose, zwei Minuten nach dem Anlegen: beide
+  // Server laufen, k0rdent meldet Progressing, und einer von vier
+  // mitgelieferten Diensten ist oben.
+  //
+  // Die Vorgaengerfassung las den Grund `Failed` an ServicesInReadyState und
+  // schrieb den Cluster als gescheitert in die Datenbank. Er baute noch.
+  const state = readStatus({
+    status: {
+      conditions: [
+        { type: 'CredentialReady', status: 'True' },
+        { type: 'TemplateReady', status: 'True' },
+        { type: 'HelmChartReady', status: 'True' },
+        { type: 'HelmReleaseReady', status: 'True', reason: 'InstallSucceeded' },
+        {
+          type: 'Ready',
+          status: 'False',
+          reason: 'Progressing',
+          message: '1/4 Services are ready.. * WorkersAvailable:',
+        },
+        { type: 'ServicesInReadyState', status: 'False', reason: 'Failed', message: '1/4' },
+        { type: 'CAPIClusterSummary', status: 'False', reason: 'IssuesReported' },
+      ],
+    },
+  });
+
+  assert.strictEqual(state.status, 'provisioning');
+  assert.strictEqual(state.ready, false);
+});
+
+test('endgueltig gescheitert ist, was nicht mehr versucht wird', () => {
+  // `FailedNonRetriable` ist bei Sveltos die Stelle, an der aufgegeben wird -
+  // so ist der kof-operators-Release einmal gescheitert, bevor #21 zu war.
+  const state = readStatus({
+    status: {
+      conditions: [
+        { type: 'CredentialReady', status: 'True' },
+        { type: 'Ready', status: 'False', reason: 'Progressing' },
+        {
+          type: 'ServicesInReadyState',
+          status: 'False',
+          reason: 'Failed',
+          message:
+            'Helm=FailedNonRetriable: referenced resource: ConfigMap kcm-system/kof-cluster-config-x does not exist',
+        },
+      ],
+    },
+  });
+
+  assert.strictEqual(state.status, 'failed');
+  assert.match(state.message, /FailedNonRetriable/);
+});
+
+test('ein fertiger Cluster ist fertig, auch wenn Dienste noch zaehlen', () => {
+  const state = readStatus({
+    status: {
+      conditions: [
+        { type: 'Ready', status: 'True', reason: 'Succeeded' },
+        { type: 'ServicesInReadyState', status: 'False', reason: 'Failed', message: '4/5' },
+      ],
+    },
+  });
+  // Ready entscheidet. Die Dienste sind ein eigener Zustand.
+  assert.strictEqual(state.status, 'active');
+  assert.strictEqual(state.ready, true);
+});

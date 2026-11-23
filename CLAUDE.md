@@ -154,6 +154,28 @@ baut eine zweite Kopie derselben Zuordnung, und zwei Kopien laufen auseinander.
 Vorgaengerfassung schrieb an beiden Stellen 0 - und ein Cluster mit 0 % CPU
 liest sich wie ein leerer, nicht wie ein unbekannter.
 
+## Gescheitert heisst endgueltig, nicht "noch nicht fertig"
+
+`readStatus` erkennt Scheitern an `FailedNonRetriable` - der Stelle, an der
+k0rdent und Sveltos aufgeben. Nicht an irgendeinem Grund, der „Failed"
+enthaelt.
+
+Hier stand einmal: irgendeine Bedingung mit `False` und einem Grund, der
+`/fail|error/` trifft. Das traf `ServicesInReadyState` mit dem Grund `Failed`
+und der Meldung `1/4` - einer von vier mitgelieferten Diensten ist oben,
+mitten im Bau der Normalfall. Der Cluster `dev-dose` stand dadurch zwei
+Minuten nach dem Anlegen als FAILED in der Datenbank, waehrend seine beiden
+Server liefen.
+
+Dass das erst jetzt auffiel, lag an einem zweiten Fehler: die Status-Abfrage
+lief in einen 404, weil die Kennung einen Schraegstrich traegt und
+`/v1/clusters/:id` ein Segment ist. Solange nie ein Status ankam, konnte auch
+keiner falsch sein. **Ein verdeckter Fehler wird nicht kleiner.**
+
+Die Kehrseite ist offen und bekannt: ein Cluster, der an derselben Bedingung
+haengt, bleibt jetzt „im Bau". Wie lange das erlaubt ist, braucht eine
+Zeitgrenze und ist eine Produktfrage - enopax/enopax#33.
+
 ## Was der Dry-Run beweist - und was nicht
 
 `dryRun: 'All'` an der Kubernetes-API laesst die Admission-Webhooks das

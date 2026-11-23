@@ -408,14 +408,29 @@ function readStatus(deployment) {
   });
 
   const ready = conditions.get('Ready');
-  const failed = [...conditions.values()].find(
-    (c) => c.status === 'False' && c.reason && /fail|error/i.test(c.reason),
+
+  // Gescheitert heisst "endgueltig", nicht "noch nicht fertig".
+  //
+  // Hier stand einmal: irgendeine Bedingung mit `False` und einem Grund, der
+  // /fail|error/ enthaelt. Das traf `ServicesInReadyState` mit dem Grund
+  // `Failed` und der Meldung `1/4` - einer von vier mitgelieferten Diensten
+  // ist oben, mitten im Bau der Normalfall. Der Cluster `dev-dose` stand
+  // dadurch nach zwei Minuten als FAILED in der Datenbank, waehrend seine
+  // beiden Server liefen und k0rdent `Progressing` meldete.
+  //
+  // Endgueltig ist bei k0rdent und Sveltos `FailedNonRetriable`: dort wird
+  // nicht weiter versucht. Alles andere laeuft noch, und wie lange das
+  // dauern darf, ist eine Produktfrage - siehe enopax/enopax#33.
+  const terminal = [...conditions.values()].find(
+    (c) =>
+      c.status === 'False' &&
+      /nonretriable/i.test(`${c.reason || ''} ${c.message || ''}`),
   );
 
   return {
     ready: ready ? ready.status === 'True' : false,
-    status: ready && ready.status === 'True' ? 'active' : failed ? 'failed' : 'provisioning',
-    message: (ready && ready.message) || (failed && failed.message) || undefined,
+    status: ready && ready.status === 'True' ? 'active' : terminal ? 'failed' : 'provisioning',
+    message: (ready && ready.message) || (terminal && terminal.message) || undefined,
     stages,
     // Anteil erreichter Stufen - die Console zeigt einen Balken, und er soll
     // aus den Stufen folgen statt daneben zu laufen.
