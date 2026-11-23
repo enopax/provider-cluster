@@ -102,18 +102,50 @@ Der hosted-Dialekt unterscheidet sich nicht nur in Feldnamen:
   zeigt mit `HetznerCluster.spec.hetznerSecretRef` auf ein anderes Secret auf
   dem regionalen Cluster und legt dessen Schluessel selbst auf `hcloud` fest.
   Zwei Secrets, zwei Schluessel, ein Anbieter.
-- **`serviceSpec`** mit cert-manager (die Vorlage bringt es nicht mit, anders
-  als standalone, und KOFs otel-operator braucht die Certificate-CRDs) und
-  Cilium, dessen `k8sServiceHost` derselbe apiHost sein muss.
+- **`serviceSpec`** mit cert-manager, und nur damit: die Vorlage bringt es
+  nicht mit, anders als standalone, und KOFs otel-operator braucht die
+  Certificate-CRDs.
 - **die KOF-Labels**, sonst erreicht die Konfiguration des Kindes den
   regionalen Cluster nicht und `kof-operators` scheitert FailedNonRetriable.
 - **`clusterNetwork.pods.cidrBlock`** im Singular, waehrend standalone
   `cidrBlocks` als Liste nimmt.
 
 Namen und Werte der Dienste stehen in `HOSTED_SERVICES` und nicht in der
-Datenbank, weil sie eine Einheit bilden: die Cilium-Werte verweisen auf den
-apiHost, und ein anderer Cilium-Stand kann andere Schluessel verlangen. Ein
-Versionssprung ist deshalb eine Freigabe dieses Dienstes, keine Datenpflege.
+Datenbank, weil sie eine Einheit bilden: ein anderer cert-manager-Stand kann
+andere Schluessel verlangen. Ein Versionssprung ist deshalb eine Freigabe
+dieses Dienstes, keine Datenpflege.
+
+## Das CNI kommt vom Chart, nicht von hier
+
+`HOSTED_SERVICES` lieferte einmal auch **Cilium** mit, mit dem Kommentar
+„weil der Cluster sonst kein CNI hat". Das war nicht geprueft, sondern
+angenommen: die hosted-Vorlage installiert Cilium selbst, ueber die
+k0s-Extensions in `templates/k0smotroncontrolplane.yaml` - zusammen mit
+hcloud-ccm und hcloud-csi, die wir hier nie mitgeliefert haben.
+
+Beide Wege gleichzeitig haben sich ueberschrieben, belegt im Kindcluster von
+`dev-dose`:
+
+```
+helm -n kube-system history cilium
+1  13:39:11  superseded  cilium-1.19.4  Install complete   <- Chart, k0s-Extension
+2  13:48:56  deployed    cilium-1.18.1  Upgrade complete   <- dieser Dienst, Sveltos
+```
+
+Eine Rueckdatierung des CNI auf einem Cluster, der schon lief, neun Minuten
+nach seiner Geburt, mit anderem Tunnelprotokoll (geneve statt vxlan). Dass es
+gut ging, war Glueck.
+
+**Die Regel daraus:** was das Chart mitbringt, bringen wir nicht noch einmal
+mit. Wer einen Dienst in `HOSTED_SERVICES` eintraegt, sieht vorher in
+`templates/k0smotroncontrolplane.yaml` nach, ob er schon von dort kommt - und
+in `helm list` im Kindcluster, ob er schon laeuft.
+
+Fuer bestehende Cluster ist das kein stiller Wechsel: nimmt man den Dienst aus
+dem `serviceSpec` eines laufenden Clusters, **deinstalliert Sveltos ihn** -
+beim CNI heisst das, dem Cluster das Netz zu nehmen, bis k0s seine Extension
+nachzieht. Ein bestehender Cluster wird deshalb neu gebaut und nicht
+umgestellt.
 
 **1.5.0 baut nicht.** Dort fehlte `HetznerCluster.spec.sshKeys`; 1.5.1 stellt
 es wieder her.
