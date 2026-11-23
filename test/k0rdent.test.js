@@ -551,3 +551,111 @@ test('die gemeldete Arbeiterzahl kommt aus dem Dialekt des Objekts', async () =>
 
   setClient(null);
 });
+
+test('Pods werden aufgeschluesselt, nicht gezaehlt', () => {
+  const { __readPods } = require('../provider/cluster/handlers');
+
+  // Die Vorgaengerfassung gab `pods.items.length` zurueck, und console-api
+  // schrieb das als "laufend". Bei dev-dose standen 31 Pods da, und es waren
+  // wirklich 31 laufende - ein gescheiterter waere mitgezaehlt worden.
+  const state = __readPods([
+    { metadata: { namespace: 'default', name: 'a' }, status: { phase: 'Running' } },
+    { metadata: { namespace: 'default', name: 'b' }, status: { phase: 'Pending' } },
+    { metadata: { namespace: 'default', name: 'c' }, status: { phase: 'Failed' } },
+    { metadata: { namespace: 'default', name: 'd' }, status: { phase: 'Succeeded' } },
+  ]);
+
+  assert.strictEqual(state.running, 1);
+  assert.strictEqual(state.pending, 1);
+  assert.strictEqual(state.failed, 1);
+  assert.strictEqual(state.succeeded, 1);
+});
+
+test('ein Pod mit Neustarts faellt auf, auch wenn er laeuft', () => {
+  const { __readPods } = require('../provider/cluster/handlers');
+
+  // Genau der Fall aus dem Kindcluster: metrics-server laeuft, hatte aber
+  // vier Neustarts mit exit 2. Wer nur auf "laeuft" sieht, merkt nichts.
+  const state = __readPods([
+    {
+      metadata: { namespace: 'kube-system', name: 'metrics-server-x' },
+      status: {
+        phase: 'Running',
+        containerStatuses: [
+          { restartCount: 4, state: { running: {} }, lastState: { terminated: { reason: 'Error' } } },
+        ],
+      },
+    },
+    {
+      metadata: { namespace: 'default', name: 'ruhig' },
+      status: { phase: 'Running', containerStatuses: [{ restartCount: 0 }] },
+    },
+  ]);
+
+  assert.strictEqual(state.running, 2);
+  assert.strictEqual(state.restarts, 4);
+  assert.strictEqual(state.troubled.length, 1);
+  assert.strictEqual(state.troubled[0].name, 'metrics-server-x');
+  assert.strictEqual(state.troubled[0].restarts, 4);
+});
+
+test('die unruhigsten zuerst, und nicht alle', () => {
+  const { __readPods } = require('../provider/cluster/handlers');
+
+  // Eine vollstaendige Liste ist bei einem grossen Cluster lang und in
+  // Sekunden veraltet.
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    metadata: { namespace: 'default', name: `p${i}` },
+    status: { phase: 'Running', containerStatuses: [{ restartCount: i }] },
+  }));
+
+  const state = __readPods(many);
+  assert.strictEqual(state.troubled.length, 20);
+  assert.strictEqual(state.troubled[0].restarts, 29);
+});
+
+test('der Grund kommt von Kubernetes, nicht von hier', () => {
+  const { __readPods } = require('../provider/cluster/handlers');
+
+  const state = __readPods([
+    {
+      metadata: { namespace: 'kube-system', name: 'csi' },
+      status: {
+        phase: 'Pending',
+        containerStatuses: [{ restartCount: 0, state: { waiting: { reason: 'CreateContainerConfigError' } } }],
+      },
+    },
+  ]);
+
+  // Genau diese Meldung stand beim ersten PaaS-Versuch im Kindcluster, als
+  // das resource-template auf dem Regional fehlte.
+  assert.strictEqual(state.troubled[0].reason, 'CreateContainerConfigError');
+});
+
+test('Volumes werden gelesen, und keine sind keine 0 TB', () => {
+  const { __readVolumes } = require('../provider/cluster/handlers');
+
+  const leer = __readVolumes([]);
+  assert.strictEqual(leer.count, 0);
+  assert.strictEqual(leer.totalGi, 0);
+  assert.deepStrictEqual(leer.volumes, []);
+
+  const voll = __readVolumes([
+    {
+      metadata: { namespace: 'kof', name: 'vmstorage-0' },
+      spec: { storageClassName: 'hcloud-volumes', resources: { requests: { storage: '10Gi' } } },
+      status: { phase: 'Bound', capacity: { storage: '10Gi' } },
+    },
+    {
+      metadata: { namespace: 'db', name: 'pg-0' },
+      spec: { storageClassName: 'hcloud-volumes', resources: { requests: { storage: '1Ti' } } },
+      status: { phase: 'Bound', capacity: { storage: '1Ti' } },
+    },
+  ]);
+
+  assert.strictEqual(voll.count, 2);
+  // 10 Gi + 1 Ti. Die Einheit ist nicht kosmetisch: bei Hetzner stehen
+  // dahinter Volumes, deren Groesse die Rechnung mitbestimmt.
+  assert.strictEqual(voll.totalGi, 10 + 1024);
+  assert.strictEqual(voll.volumes[0].storageClass, 'hcloud-volumes');
+});
