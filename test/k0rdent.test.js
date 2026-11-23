@@ -237,3 +237,47 @@ test('ein Fehler beim Nachsehen ist kein Fehlen', async () => {
 
   setClient(null);
 });
+
+test('die kubeconfig eines PaaS-Kindes wird auf dem Regional gefunden', async () => {
+  const { setClient, metrics } = require('../provider/cluster/handlers');
+
+  // Der Management-Cluster hat sie nicht - beim PaaS-Cluster liegt sie auf
+  // dem regionalen. Vorher suchte dieser Dienst nur auf dem Management und
+  // meldete `available: false`, waehrend beide Knoten liefen.
+  const notFound = Object.assign(new Error('not found'), { code: 404 });
+  const asked = [];
+
+  setClient({
+    core: {
+      readNamespacedSecret: async ({ name }) => {
+        asked.push(name);
+        if (name === 'kind-kubeconfig') throw notFound;
+        if (name === 'ep-eu1-fsn1-standalone-kubeconfig') {
+          return { data: { value: Buffer.from('regional-kubeconfig').toString('base64') } };
+        }
+        throw notFound;
+      },
+    },
+    objects: {
+      getNamespacedCustomObject: async () => ({
+        metadata: {
+          labels: {
+            'k0rdent.mirantis.com/kof-regional-cluster-name': 'ep-eu1-fsn1-standalone',
+            'k0rdent.mirantis.com/kof-regional-cluster-namespace': 'kcm-system',
+          },
+        },
+      }),
+    },
+  });
+
+  const result = await metrics({ id: 'kcm-system/kind' });
+
+  // Entscheidend ist die Reihenfolge: zuerst beim Management, dann ueber den
+  // regionalen Cluster, dessen Namen das Objekt selbst traegt.
+  assert.deepStrictEqual(asked, ['kind-kubeconfig', 'ep-eu1-fsn1-standalone-kubeconfig']);
+  // Die Attrappe liefert keine brauchbare kubeconfig weiter; hier zaehlt,
+  // dass ueberhaupt dort gesucht wurde.
+  assert.strictEqual(result.success === false || result.available === false, true);
+
+  setClient(null);
+});

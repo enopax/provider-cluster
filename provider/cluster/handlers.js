@@ -189,33 +189,86 @@ async function status(input) {
  * Skripte lieferten hier fest verdrahtete 0 und liessen die Console behaupten,
  * ein Cluster habe keine Knoten.
  */
+/**
+ * Die kubeconfig eines Kindclusters, wo immer sie liegt.
+ *
+ * Beim Private Cluster legt Cluster API sie neben das ClusterDeployment, also
+ * auf den Management-Cluster. Beim PaaS-Cluster nicht: dessen CAPI-Objekte
+ * werden auf dem **regionalen** Cluster versoehnt, und dort liegt auch das
+ * Secret - so steht es in enopax/cluster#23.
+ *
+ * Die Vorgaengerfassung suchte nur auf dem Management-Cluster, fand beim
+ * PaaS-Cluster nichts und meldete ehrlich `available: false`. Die Console
+ * zeigte daraufhin "0 von 0" fuer einen Cluster, dessen beide Knoten liefen.
+ *
+ * Welcher regionale Cluster es ist, steht als Label am ClusterDeployment -
+ * dasselbe, das das Kind seinem Regional zuordnet. Nachgeschlagen wird also
+ * nichts, was nicht schon dort steht.
+ */
+async function childKubeconfig(id) {
+  const namespace = namespaceOf(id);
+  const name = nameOf(id);
+  const { core, objects } = client();
+
+  const read = async (api, secretName, ns) => {
+    const secret = await api.readNamespacedSecret({ name: secretName, namespace: ns });
+    const raw = secret.data && secret.data.value;
+    if (!raw) throw new Error(`Secret ${ns}/${secretName} has no "value" key`);
+    return Buffer.from(raw, 'base64').toString('utf8');
+  };
+
+  try {
+    return { kubeconfig: await read(core, `${name}-kubeconfig`, namespace), via: 'management' };
+  } catch (error) {
+    if (!notFound(error)) throw error;
+  }
+
+  // Nicht auf dem Management-Cluster: dann ueber den regionalen.
+  const deployment = await objects.getNamespacedCustomObject({
+    group: GROUP, version: VERSION, namespace, plural: PLURAL, name,
+  });
+  const regional =
+    (deployment.metadata.labels || {})['k0rdent.mirantis.com/kof-regional-cluster-name'];
+  const regionalNamespace =
+    (deployment.metadata.labels || {})['k0rdent.mirantis.com/kof-regional-cluster-namespace'] ||
+    namespace;
+  if (!regional) return { kubeconfig: null, via: null };
+
+  const regionalKc = new k8s.KubeConfig();
+  regionalKc.loadFromString(await read(core, `${regional}-kubeconfig`, regionalNamespace));
+  const regionalCore = regionalKc.makeApiClient(k8s.CoreV1Api);
+
+  try {
+    return {
+      kubeconfig: await read(regionalCore, `${name}-kubeconfig`, regionalNamespace),
+      via: regional,
+    };
+  } catch (error) {
+    if (notFound(error)) return { kubeconfig: null, via: regional };
+    throw error;
+  }
+}
+
 async function metrics(input) {
   if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
 
-  const namespace = namespaceOf(input.id);
-  const name = nameOf(input.id);
-  const { core } = client();
-
-  let kubeconfig;
+  let found;
   try {
-    const secret = await core.readNamespacedSecret({ name: `${name}-kubeconfig`, namespace });
-    const raw = secret.data && secret.data.value;
-    if (!raw) throw new Error('kubeconfig secret has no "value" key');
-    kubeconfig = Buffer.from(raw, 'base64').toString('utf8');
+    found = await childKubeconfig(input.id);
   } catch (error) {
-    if (notFound(error)) {
-      return {
-        success: true,
-        id: input.id,
-        available: false,
-        reason: 'The cluster is still being built; its kubeconfig does not exist yet.',
-      };
-    }
     return { success: false, error: messageOf(error) };
+  }
+  if (!found.kubeconfig) {
+    return {
+      success: true,
+      id: input.id,
+      available: false,
+      reason: 'The cluster is still being built; its kubeconfig does not exist yet.',
+    };
   }
 
   const childKc = new k8s.KubeConfig();
-  childKc.loadFromString(kubeconfig);
+  childKc.loadFromString(found.kubeconfig);
   const childCore = childKc.makeApiClient(k8s.CoreV1Api);
 
   try {
@@ -225,19 +278,33 @@ async function metrics(input) {
     ]);
 
     const items = nodes.items || [];
-    const ready = items.filter((n) =>
+    const isReady = (n) =>
       ((n.status && n.status.conditions) || []).some(
         (c) => c.type === 'Ready' && c.status === 'True',
-      ),
-    ).length;
+      );
+
+    // Namen, nicht nur Zahlen. Die Console zeigt waehrend des Baus, welche
+    // Maschine gerade dazukommt; "2 von 3" sagt das nicht.
+    const named = items.map((n) => ({
+      name: n.metadata.name,
+      ready: isReady(n),
+      // Was der Knoten von sich sagt - nicht abgeleitet.
+      kubeletVersion: (n.status && n.status.nodeInfo && n.status.nodeInfo.kubeletVersion) || null,
+      createdAt: n.metadata.creationTimestamp || null,
+    }));
 
     return {
       success: true,
       id: input.id,
       available: true,
+      // Ueber welchen Cluster die kubeconfig gefunden wurde. Beim
+      // PaaS-Cluster ist das der regionale, und das gehoert in die Antwort:
+      // wer sie liest, soll nicht raten muessen, wo das Kind haengt.
+      via: found.via,
+      nodes: named,
       metrics: {
         totalNodes: items.length,
-        readyNodes: ready,
+        readyNodes: named.filter((n) => n.ready).length,
         pods: (pods.items || []).length,
         // Auslastung braucht metrics-server im Kindcluster. Ohne ihn wird sie
         // nicht geraten, sondern weggelassen - die Console hat dafuer einen
