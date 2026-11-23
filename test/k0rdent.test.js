@@ -186,3 +186,54 @@ test('die Stufen kommen aus den Bedingungen, nicht von hier', () => {
   assert.strictEqual(state.stages.find((s) => s.key === 'Ready').state, 'running');
   assert.strictEqual(state.stages.find((s) => s.key === 'ServicesInReadyState').state, 'pending');
 });
+
+test('die mitgelieferten Dienste werden vor dem Anlegen nachgesehen', async () => {
+  const { setClient, provision } = require('../provider/cluster/handlers');
+
+  // Ein Management-Cluster, in dem Cilium fehlt.
+  const created = [];
+  setClient({
+    objects: {
+      listNamespacedCustomObject: async () => ({
+        items: [{ metadata: { name: 'cert-manager-v1-19-3' }, status: { valid: true } }],
+      }),
+      createNamespacedCustomObject: async (args) => {
+        created.push(args);
+        return args.body;
+      },
+    },
+  });
+
+  const result = await provision(PAAS);
+  assert.strictEqual(result.success, false);
+  assert.match(result.error, /cilium-1-18-1/);
+  // Und zwar ohne dass etwas entstanden ist.
+  assert.strictEqual(created.length, 0);
+
+  setClient(null);
+});
+
+test('ein Fehler beim Nachsehen ist kein Fehlen', async () => {
+  const { setClient, provision } = require('../provider/cluster/handlers');
+
+  // Ohne Antwort wissen wir es nicht. Eine Absage auf Verdacht waere so
+  // falsch wie eine Zusage - also weiterbauen.
+  const created = [];
+  setClient({
+    objects: {
+      listNamespacedCustomObject: async () => {
+        throw new Error('etcdserver: request timed out');
+      },
+      createNamespacedCustomObject: async (args) => {
+        created.push(args);
+        return { ...args.body, metadata: { ...args.body.metadata, creationTimestamp: 'x' } };
+      },
+    },
+  });
+
+  const result = await provision(PAAS);
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(created.length, 1);
+
+  setClient(null);
+});

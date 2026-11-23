@@ -96,6 +96,27 @@ async function provision(input) {
   }
 
   const { objects } = client();
+
+  // Die mitgelieferten Dienste nachsehen, bevor etwas entsteht.
+  //
+  // Ein ServiceTemplate, das es nicht gibt, laesst das ClusterDeployment
+  // durch - die Kubernetes-API prueft den Namen nicht - und der Cluster kaeme
+  // hoch, ohne CNI und ohne cert-manager. Dafuer traegt die Rolle Leserecht
+  // auf servicetemplates; es zu haben und nicht zu benutzen waere ein
+  // Versprechen ohne Einlösung.
+  const wanted = ((body.spec.serviceSpec || {}).services || []).map((x) => x.template);
+  if (wanted.length) {
+    const missing = await missingServiceTemplates(objects, body.metadata.namespace, wanted);
+    if (missing.length) {
+      return {
+        success: false,
+        error:
+          `Missing or invalid ServiceTemplate(s) in ${body.metadata.namespace}: ${missing.join(', ')}. ` +
+          'The cluster would come up without them — refusing instead.',
+      };
+    }
+  }
+
   try {
     const created = await objects.createNamespacedCustomObject({
       group: GROUP,
@@ -112,6 +133,32 @@ async function provision(input) {
     }
     return { success: false, error: messageOf(error) };
   }
+}
+
+/**
+ * Welche der verlangten ServiceTemplates fehlen oder ungueltig sind.
+ *
+ * Ein Fehler beim Nachsehen zaehlt nicht als "fehlt": ohne Antwort wissen wir
+ * es nicht, und eine Absage auf Verdacht waere so falsch wie eine Zusage.
+ */
+async function missingServiceTemplates(objects, namespace, wanted) {
+  let items;
+  try {
+    const list = await objects.listNamespacedCustomObject({
+      group: GROUP,
+      version: VERSION,
+      namespace,
+      plural: 'servicetemplates',
+    });
+    items = list.items || [];
+  } catch (error) {
+    return [];
+  }
+
+  const valid = new Set(
+    items.filter((t) => t.status && t.status.valid).map((t) => t.metadata.name),
+  );
+  return wanted.filter((name) => !valid.has(name));
 }
 
 async function status(input) {
