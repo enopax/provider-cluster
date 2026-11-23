@@ -14,8 +14,33 @@
  */
 
 const k8s = require('@kubernetes/client-node');
-const { GROUP, VERSION, PLURAL, DEFAULT_NAMESPACE, buildClusterDeployment, readStatus } =
-  require('./k0rdent');
+const {
+  GROUP,
+  VERSION,
+  PLURAL,
+  DEFAULT_NAMESPACE,
+  buildClusterDeployment,
+  readStatus,
+  workersOf,
+  scalePatch,
+} = require('./k0rdent');
+
+/**
+ * Der Content-Type eines Patches - und warum er hier ausdruecklich steht.
+ *
+ * `patchNamespacedCustomObject` darf zwei Medientypen schicken, und ohne
+ * Options-Argument waehlt der generierte Client den **ersten** der Liste:
+ * `application/json-patch+json`. Ein JSON Patch ist eine Liste von
+ * Operationen; unser Rumpf ist ein Objekt. Der API-Server antwortet
+ *
+ *   400 error decoding patch: json: cannot unmarshal object into Go value
+ *       of type []handlers.jsonPatchOp
+ *
+ * Das hat gekostet: Skalieren war in beiden Varianten wirkungslos, und zwar
+ * lautlos - console-api setzte den Cluster nach dem Aufruf auf ACTIVE, und
+ * die Zielzahl stand bereits in seiner Datenbank. Siehe enopax/enopax#38.
+ */
+const MERGE_PATCH = k8s.setHeaderOptions('Content-Type', k8s.PatchStrategy.MergePatch);
 
 /**
  * Ein Client, nicht einer pro Anfrage.
@@ -69,7 +94,11 @@ function summarise(deployment) {
     message: state.message,
     stages: state.stages,
     progress: state.progress,
-    workerNodes: config.workersNumber,
+    // Je Dialekt, nicht fest auf `workersNumber`: der hosted-Chart fuehrt die
+    // Zahl als `worker.replicas`, und ein PaaS-Cluster meldete hier deshalb
+    // `undefined` - bis ein Patch sie hineinschrieb, woraufhin dieser Dienst
+    // seine eigene Schreibung zurueckgelesen hat statt der Wahrheit.
+    workerNodes: workersOf(config),
     controlPlaneNodes: config.controlPlaneNumber,
     region: config.region,
     k8sVersion: (config.k0s && config.k0s.version) || undefined,
@@ -446,6 +475,15 @@ async function kubeconfig(input) {
   return { success: true, id: input.id, via: found.via, kubeconfig: found.kubeconfig };
 }
 
+/**
+ * Setzt die Arbeiterzahl eines bestehenden Clusters.
+ *
+ * Liest das Objekt, bevor es schreibt. Der Pfad der Zahl haengt am Aufbau der
+ * Konfiguration - `worker.replicas` im hosted-, `workersNumber` im
+ * standalone-Dialekt -, und den kennt man erst, wenn man das Objekt gesehen
+ * hat. Ein zusaetzlicher Aufruf gegen eine blinde Schreibung: der blinde
+ * Schluessel wird von der API angenommen und von keinem Chart gelesen.
+ */
 async function update(input) {
   if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
   if (input.workerNodes === undefined) {
@@ -453,15 +491,18 @@ async function update(input) {
   }
 
   const { objects } = client();
+  const ref = {
+    group: GROUP,
+    version: VERSION,
+    namespace: namespaceOf(input.id),
+    plural: PLURAL,
+    name: nameOf(input.id),
+  };
+
   try {
-    const patched = await objects.patchNamespacedCustomObject({
-      group: GROUP,
-      version: VERSION,
-      namespace: namespaceOf(input.id),
-      plural: PLURAL,
-      name: nameOf(input.id),
-      body: { spec: { config: { workersNumber: Number(input.workerNodes) } } },
-    });
+    const current = await objects.getNamespacedCustomObject(ref);
+    const body = scalePatch(current, Number(input.workerNodes));
+    const patched = await objects.patchNamespacedCustomObject({ ...ref, body }, MERGE_PATCH);
     return { success: true, ...summarise(patched) };
   } catch (error) {
     if (notFound(error)) return { success: false, error: 'Cluster not found', id: input.id };

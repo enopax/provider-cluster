@@ -399,3 +399,155 @@ test('ohne Messung bleibt die Auslastung unbekannt', async () => {
   assert.strictEqual(usage.memoryPercent, null);
   assert.strictEqual(usage.nodes.size, 0);
 });
+
+/**
+ * Skalieren, und zwar so, dass beide Fehler aus enopax/enopax#38 auffallen
+ * wuerden.
+ *
+ * Die vorhandenen Tests haben keinen der beiden gefunden: `http.test.js`
+ * prueft, dass `PUT /v1/clusters/:id` beim Handler ankommt - mit einem
+ * untergeschobenen Handler -, und diese Datei prueft die Uebersetzung beim
+ * Anlegen. Was `update` wirklich an die Kubernetes-API schickt, prueffte
+ * niemand. Deshalb steht hier der Aufruf selbst: der Rumpf, der Pfad und der
+ * Content-Type.
+ */
+
+/** Ein ClusterDeployment, wie es `dev-dose` wirklich ist (hosted). */
+const HOSTED_OBJECT = {
+  metadata: { name: 'dev-dose', namespace: 'kcm-system' },
+  spec: {
+    template: 'hetzner-hosted-cp-1-5-1',
+    config: {
+      clusterName: 'dev-dose',
+      region: 'fsn1',
+      core: { serverType: 'cpx32', imageName: 'ubuntu-24.04', replicas: 1 },
+      worker: { serverType: 'cpx32', imageName: 'ubuntu-24.04', replicas: 2 },
+    },
+  },
+};
+
+/** Und eines im standalone-Dialekt, wie der laufende Regional. */
+const STANDALONE_OBJECT = {
+  metadata: { name: 'ep-eu1-fsn1-standalone', namespace: 'kcm-system' },
+  spec: {
+    template: 'hetzner-standalone-cp-1-1-0',
+    config: { region: 'fsn1', controlPlaneNumber: 1, workersNumber: 2 },
+  },
+};
+
+/** Faengt den Aufruf ab, den `update` an die Kubernetes-API richtet. */
+function recordingClient(object) {
+  const calls = [];
+  return {
+    calls,
+    client: {
+      objects: {
+        getNamespacedCustomObject: async () => object,
+        patchNamespacedCustomObject: async (args, options) => {
+          calls.push({ args, options });
+          return object;
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Welchen Content-Type die Options wirklich setzen.
+ *
+ * Nicht `deepStrictEqual` gegen `setHeaderOptions(...)` - das waere die
+ * Bibliothek gegen sich selbst. Stattdessen laeuft die Middleware gegen einen
+ * Abzug des Request-Objekts, so wie der Client es tun wuerde.
+ */
+function contentTypeOf(options) {
+  const headers = {};
+  const request = { setHeaderParam: (k, v) => { headers[k] = v; } };
+  for (const m of (options && options.middleware) || []) m.pre(request);
+  return headers['Content-Type'];
+}
+
+test('der PaaS-Cluster wird an worker.replicas skaliert', async () => {
+  const { setClient, update } = require('../provider/cluster/handlers');
+  const { calls, client } = recordingClient(HOSTED_OBJECT);
+  setClient(client);
+
+  const result = await update({ id: 'kcm-system/dev-dose', workerNodes: 3 });
+
+  assert.strictEqual(result.success, true);
+  assert.strictEqual(calls.length, 1);
+  // Genau dieses Feld, und kein zweites: `workersNumber` wuerde die API
+  // annehmen und kein Chart lesen.
+  assert.deepStrictEqual(calls[0].args.body, {
+    spec: { config: { worker: { replicas: 3 } } },
+  });
+  assert.strictEqual(calls[0].args.name, 'dev-dose');
+  assert.strictEqual(calls[0].args.namespace, 'kcm-system');
+
+  setClient(null);
+});
+
+test('der Private Cluster wird an workersNumber skaliert', async () => {
+  const { setClient, update } = require('../provider/cluster/handlers');
+  const { calls, client } = recordingClient(STANDALONE_OBJECT);
+  setClient(client);
+
+  await update({ id: 'kcm-system/ep-eu1-fsn1-standalone', workerNodes: 4 });
+
+  assert.deepStrictEqual(calls[0].args.body, {
+    spec: { config: { workersNumber: 4 } },
+  });
+
+  setClient(null);
+});
+
+test('das Patch geht als merge-patch hinaus, nicht als json-patch', async () => {
+  const { setClient, update } = require('../provider/cluster/handlers');
+  const { calls, client } = recordingClient(HOSTED_OBJECT);
+  setClient(client);
+
+  await update({ id: 'kcm-system/dev-dose', workerNodes: 3 });
+
+  // Ohne dieses Argument waehlt der generierte Client
+  // `application/json-patch+json` - den ersten der beiden erlaubten
+  // Medientypen - und die API antwortet 400: ein Objekt ist keine Liste von
+  // Operationen. Skalieren war dadurch in beiden Varianten wirkungslos.
+  assert.strictEqual(contentTypeOf(calls[0].options), 'application/merge-patch+json');
+
+  setClient(null);
+});
+
+test('ein Cluster mit unbekanntem Aufbau wird nicht skaliert', async () => {
+  const { setClient, update } = require('../provider/cluster/handlers');
+  const { calls, client } = recordingClient({
+    metadata: { name: 'fremd', namespace: 'kcm-system' },
+    spec: { template: 'aws-standalone-cp-1-0-0', config: { region: 'eu-central-1' } },
+  });
+  setClient(client);
+
+  const result = await update({ id: 'kcm-system/fremd', workerNodes: 3 });
+
+  // Lieber eine Absage mit Grund als ein Schluessel, den niemand liest.
+  assert.strictEqual(result.success, false);
+  assert.match(result.error, /neither worker\.replicas nor workersNumber/);
+  assert.strictEqual(calls.length, 0);
+
+  setClient(null);
+});
+
+test('die gemeldete Arbeiterzahl kommt aus dem Dialekt des Objekts', async () => {
+  const { setClient, status } = require('../provider/cluster/handlers');
+
+  // Vorher las `summarise` immer `config.workersNumber`. Fuer einen
+  // PaaS-Cluster war das `undefined` - und nach einem Patch genau der Wert,
+  // den dieser Dienst selbst hineingeschrieben hatte.
+  setClient({ objects: { getNamespacedCustomObject: async () => HOSTED_OBJECT } });
+  assert.strictEqual((await status({ id: 'kcm-system/dev-dose' })).workerNodes, 2);
+
+  setClient({ objects: { getNamespacedCustomObject: async () => STANDALONE_OBJECT } });
+  assert.strictEqual(
+    (await status({ id: 'kcm-system/ep-eu1-fsn1-standalone' })).workerNodes,
+    2,
+  );
+
+  setClient(null);
+});
