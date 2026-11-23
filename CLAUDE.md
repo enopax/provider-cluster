@@ -5,6 +5,34 @@ Guidance for working with the Enopax Cluster Provider.
 
 ---
 
+## Mehrere Sitzungen arbeiten hier gleichzeitig
+
+Am 2026-11-23 liefen zwei. Inhaltlich ging das gut - verschiedene Themen,
+Rebase ohne einen Konflikt. Kollidiert sind **nur die Versionsnummern**, und
+daraus wurde fast ein ueberschriebenes Image.
+
+Drei Regeln, jede fuer einen Fehler, der wirklich passiert ist:
+
+**Holen, bevor man baut.** `git fetch` als erster Schritt. Wer die
+Versionsnummer gegen das lokale `package.json` waehlt statt gegen `origin`,
+waehlt eine, die schon vergeben ist.
+
+**Niemals einen vorhandenen Image-Tag ueberschreiben.** Vor jedem Push:
+
+```bash
+docker manifest inspect ghcr.io/enopax/provider-cluster:<version> && echo "VERGEBEN"
+```
+
+Ein vorhandener Tag ist das veroeffentlichte Artefakt von jemandem. Git lehnt
+einen Push ab, der etwas verlieren wuerde - **die Registry nicht**, sie nimmt
+ihn stillschweigend an. Am 2026-11-23 lag ein `0.3.4` aus einer Sitzung schon
+in der Registry, und in der anderen lag ein gleichnamiges Image aus einem
+Stand *vor* dem Rebase. Dass es nicht hochgeladen wurde, lag an einem
+abgelaufenen Registry-Token, nicht an Sorgfalt.
+
+**Nach einem Rebase die Versionsnummer neu waehlen.** Die alte gehoert zu dem
+Stand, aus dem sie kam.
+
 ## Was dieser Dienst ist
 
 Eine Fassade vor der Kubernetes-API des Management-Clusters. Er nimmt eine
