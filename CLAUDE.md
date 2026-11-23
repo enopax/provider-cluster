@@ -278,6 +278,36 @@ Die Kehrseite ist offen und bekannt: ein Cluster, der an derselben Bedingung
 haengt, bleibt jetzt „im Bau". Wie lange das erlaubt ist, braucht eine
 Zeitgrenze und ist eine Produktfrage - enopax/enopax#33.
 
+## KOF-Mandanten: die Klemmung sitzt im VMUser, nicht in der Abfrage
+
+Die Telemetrie wird nicht ueber VictoriaMetrics-Mandanten getrennt - der
+Endpunkt bleibt `/vm/select/0/...` fuer alle. Getrennt wird ueber ein Label
+`tenant` an der Zeitreihe plus eine serverseitige Einschraenkung in `vmauth`.
+
+Drei Dinge daran sind nicht offensichtlich, alle am laufenden Cluster
+gemessen:
+
+**Der Kollektor setzt das Label nicht - `vmauth` stempelt es beim Schreiben.**
+Im Kindcluster steht nur `external_labels: {cluster: dev-dose}`. Die Kennung
+kommt aus dem `extra_label` am Insert-Pfad des Cluster-VMUsers. Wer im
+Kollektor nachsieht und kein `tenant` findet, zieht den falschen Schluss.
+
+**Ein Zugang ohne Filter bekommt trotzdem nur seinen Mandanten.** Die
+Einschraenkung steht im `VMUser`, also kann ein Client sie nicht weglassen.
+Gemessen: dieselbe Abfrage `up` gibt dem einen Zugang 41 Zeitreihen und dem
+eines anderen Mandanten 0.
+
+**PromQL verankert, LogsQL nicht.** `{tenant=~"enopax(_.*)?"}` trifft nur
+vollstaendig - `nopax(_.*)?` gibt 0. LogsQL und Traces benutzen `:~`, und das
+ist ein unverankerter Teilstring-Abgleich: `"tenant":~"nopax"` liefert Zeilen.
+Deshalb tragen die Klemmungen fuer Logs und Traces ausdrueckliche `^` und `$`.
+Ohne sie reichte der Zugang von `enopax` in die Logs von `fremd-enopax`.
+
+`kof-tenant.js` legt den Lesezugang je Organisation an - lesend, nie
+schreibend, und die Zieladressen abgeschrieben aus einem vom Operator
+erzeugten VMUser statt hier hingeschrieben. Siehe enopax/enopax#39.
+
+
 ## Was der Dry-Run beweist - und was nicht
 
 `dryRun: 'All'` an der Kubernetes-API laesst die Admission-Webhooks das

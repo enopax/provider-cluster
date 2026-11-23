@@ -24,6 +24,7 @@ const {
   workersOf,
   scalePatch,
 } = require('./k0rdent');
+const { ensureOrganisationTenant } = require('./kof-tenant');
 
 /**
  * Der Content-Type eines Patches - und warum er hier ausdruecklich steht.
@@ -154,6 +155,20 @@ async function provision(input) {
       plural: PLURAL,
       body,
     });
+
+    // Der Lesezugang der Organisation, auf dem regionalen Cluster.
+    //
+    // Er haengt nicht am Cluster, der hier entsteht - aber hier ist der
+    // Zeitpunkt, an dem wir die Region kennen und ohnehin mit ihr reden. Er
+    // entsteht einmal und wird danach in Ruhe gelassen; ein zweiter
+    // Clusterbau derselben Organisation aendert nichts.
+    //
+    // Der Bau des Clusters haengt nicht davon ab. Schlaegt es fehl, steht es
+    // im Protokoll und der naechste Clusterbau holt es nach - einen
+    // fertigen Cluster deswegen als gescheitert zu melden, waere die falsche
+    // Reihenfolge der Sorgen.
+    await ensureTenantQuietly(input, body.metadata.namespace);
+
     return { success: true, ...summarise(created) };
   } catch (error) {
     const code = error && (error.code || error.statusCode);
@@ -161,6 +176,46 @@ async function provision(input) {
       return { success: false, error: `A cluster named "${input.name}" already exists`, id: `${body.metadata.namespace}/${input.name}` };
     }
     return { success: false, error: messageOf(error) };
+  }
+}
+
+/**
+ * Legt den Lesezugang der Organisation an, ohne den Clusterbau zu gefaehrden.
+ *
+ * Erreicht wird der regionale Cluster so wie in `childKubeconfig` - ueber sein
+ * Kubeconfig-Secret auf dem Management-Cluster. Ohne regionalen Cluster (der
+ * Private Cluster hat keinen) gibt es keinen KOF-Mandanten und nichts zu tun.
+ */
+async function ensureTenantQuietly(input, namespace) {
+  if (!input.regionalClusterName || !input.organisationSlug) return;
+
+  try {
+    const { core } = client();
+    const regionalNamespace = input.regionalClusterNamespace || namespace;
+    const secret = await core.readNamespacedSecret({
+      name: `${input.regionalClusterName}-kubeconfig`,
+      namespace: regionalNamespace,
+    });
+    const raw = secret.data && secret.data.value;
+    if (!raw) throw new Error(`Secret ${regionalNamespace}/${input.regionalClusterName}-kubeconfig has no "value" key`);
+
+    const regionalKc = new k8s.KubeConfig();
+    regionalKc.loadFromString(Buffer.from(raw, 'base64').toString('utf8'));
+
+    const result = await ensureOrganisationTenant({
+      core: regionalKc.makeApiClient(k8s.CoreV1Api),
+      objects: regionalKc.makeApiClient(k8s.CustomObjectsApi),
+      namespace: regionalNamespace,
+      organisationSlug: input.organisationSlug,
+    });
+
+    if (result.created) {
+      console.log(`[kof] read access for ${input.organisationSlug}: ${result.name} clamped to ${result.pattern}`);
+    } else {
+      console.log(`[kof] read access for ${input.organisationSlug}: ${result.reason}`);
+    }
+  } catch (error) {
+    console.log(`[kof] read access for ${input.organisationSlug} could not be ensured: ${messageOf(error)}`);
   }
 }
 
