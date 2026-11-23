@@ -272,9 +272,14 @@ async function metrics(input) {
   const childCore = childKc.makeApiClient(k8s.CoreV1Api);
 
   try {
-    const [nodes, pods] = await Promise.all([
+    const [nodes, pods, claims] = await Promise.all([
       childCore.listNode(),
       childCore.listPodForAllNamespaces(),
+      // Volumes gehoeren dazu: bei Hetzner stehen dahinter hcloud-Volumes,
+      // deren Groesse die Rechnung mitbestimmt.
+      childCore
+        .listPersistentVolumeClaimForAllNamespaces()
+        .catch(() => ({ items: [] })),
     ]);
 
     const items = nodes.items || [];
@@ -287,6 +292,8 @@ async function metrics(input) {
     // Maschine gerade dazukommt; "2 von 3" sagt das nicht.
     // Die Auslastung, wenn der Kindcluster sie messen kann.
     const usage = await nodeUsage(childKc, items);
+    const podState = readPods(pods.items);
+    const volumeState = readVolumes(claims.items);
 
     const named = items.map((n) => ({
       name: n.metadata.name,
@@ -308,10 +315,21 @@ async function metrics(input) {
       // wer sie liest, soll nicht raten muessen, wo das Kind haengt.
       via: found.via,
       nodes: named,
+      // Was nicht laeuft, mit dem Grund, den Kubernetes nennt.
+      troubledPods: podState.troubled,
+      volumes: volumeState.volumes,
       metrics: {
         totalNodes: items.length,
         readyNodes: named.filter((n) => n.ready).length,
-        pods: (pods.items || []).length,
+        // Aufgeschluesselt, nicht gezaehlt. `pods` war die Gesamtzahl und
+        // wurde von console-api als "laufend" gespeichert.
+        pods: podState.running,
+        podsPending: podState.pending,
+        podsFailed: podState.failed,
+        podsSucceeded: podState.succeeded,
+        restarts: podState.restarts,
+        volumeCount: volumeState.count,
+        storageGi: volumeState.totalGi,
         // Gemessen, gegen `allocatable` gerechnet. `null`, wenn der
         // metrics-server im Kindcluster gerade nicht liefert - unbekannt ist
         // nicht null, und die Console hat dafuer einen Leerzustand.
@@ -322,6 +340,98 @@ async function metrics(input) {
   } catch (error) {
     return { success: false, error: messageOf(error) };
   }
+}
+
+/**
+ * Was im Kindcluster laeuft, und was nicht.
+ *
+ * Die Vorgaengerfassung zaehlte `pods.items.length` und console-api schrieb
+ * das als `podsRunning`. Solange alle laufen, faellt das nicht auf - bei
+ * `dev-dose` standen 31 Pods da, und es waren wirklich 31 laufende. Ein
+ * gescheiterter waere mitgezaehlt worden.
+ *
+ * Interessant ist ausserdem, was **nicht** laeuft. Genau danach habe ich beim
+ * ersten PaaS-Durchlauf gesucht: cert-manager-cainjector in `Error`, der
+ * CSI-Controller mit zehn Neustarts, metrics-server in `CrashLoopBackOff`.
+ * Alle drei fingen sich; sichtbar war es nirgends.
+ */
+function readPods(items) {
+  const phases = { running: 0, pending: 0, failed: 0, succeeded: 0 };
+  let restarts = 0;
+  const troubled = [];
+
+  for (const pod of items || []) {
+    const phase = String((pod.status && pod.status.phase) || '').toLowerCase();
+    if (phase in phases) phases[phase] += 1;
+
+    const containers = (pod.status && pod.status.containerStatuses) || [];
+    const podRestarts = containers.reduce((sum, c) => sum + (c.restartCount || 0), 0);
+    restarts += podRestarts;
+
+    // Was nicht laeuft und nicht fertig ist, oder was neu startet. Ein Pod mit
+    // Neustarts laeuft gerade, hat aber einen Grund gehabt.
+    const settled = phase === 'running' || phase === 'succeeded';
+    if (!settled || podRestarts > 0) {
+      const waiting = containers.find((c) => c.state && c.state.waiting);
+      const terminated = containers.find((c) => c.state && c.state.terminated);
+      troubled.push({
+        namespace: pod.metadata.namespace,
+        name: pod.metadata.name,
+        phase: (pod.status && pod.status.phase) || 'Unknown',
+        restarts: podRestarts,
+        // Der Grund, den Kubernetes nennt - nicht einer von hier.
+        reason:
+          (waiting && waiting.state.waiting.reason) ||
+          (terminated && terminated.state.terminated.reason) ||
+          (pod.status && pod.status.reason) ||
+          null,
+      });
+    }
+  }
+
+  return {
+    ...phases,
+    restarts,
+    // Die unruhigsten zuerst, und nicht alle: eine vollstaendige Liste ist bei
+    // einem grossen Cluster lang und in Sekunden veraltet.
+    troubled: troubled.sort((a, b) => b.restarts - a.restarts).slice(0, 20),
+  };
+}
+
+/**
+ * Die Volumes des Kindclusters.
+ *
+ * Bei Hetzner stehen hinter einem PVC hcloud-Volumes, deren Groesse die
+ * Rechnung mitbestimmt. `dev-dose` hat keine - das ist kein Fehler, sondern
+ * ein Cluster ohne zustandsbehaftete Last, und die Console zeigt dafuer einen
+ * Leerzustand statt 0 TB.
+ */
+function readVolumes(items) {
+  const parseGi = (value) => {
+    const match = /^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti)?$/.exec(String(value || ''));
+    if (!match) return 0;
+    const factors = { Ki: 1 / 1024 ** 2, Mi: 1 / 1024, Gi: 1, Ti: 1024 };
+    return Number(match[1]) * (factors[match[2]] ?? 1 / 1024 ** 3);
+  };
+
+  const volumes = (items || []).map((pvc) => ({
+    namespace: pvc.metadata.namespace,
+    name: pvc.metadata.name,
+    phase: (pvc.status && pvc.status.phase) || 'Unknown',
+    storageClass: pvc.spec && pvc.spec.storageClassName ? pvc.spec.storageClassName : null,
+    sizeGi: parseGi(
+      (pvc.status && pvc.status.capacity && pvc.status.capacity.storage) ||
+        (pvc.spec && pvc.spec.resources && pvc.spec.resources.requests
+          ? pvc.spec.resources.requests.storage
+          : null),
+    ),
+  }));
+
+  return {
+    volumes,
+    count: volumes.length,
+    totalGi: volumes.reduce((sum, v) => sum + v.sizeGi, 0),
+  };
 }
 
 /**
@@ -537,4 +647,6 @@ module.exports = {
   summarise,
   /** Nur fuer Tests: die Rechnung ohne Cluster. */
   __nodeUsage: nodeUsage,
+  __readPods: readPods,
+  __readVolumes: readVolumes,
 };
