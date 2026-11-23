@@ -12,24 +12,53 @@
 
 The Cluster Provider enables provisioning and management of Kubernetes (K8s) clusters for container orchestration. Powered by the [`@enopax/resource-api`](https://www.npmjs.com/package/@enopax/resource-api) framework, it provides production-ready Kubernetes cluster deployment through the Enopax platform.
 
-**Features**:
-- ☸️ Deploy multi-node Kubernetes clusters
-- 🔧 Configurable control plane and worker nodes
-- 📊 Real-time cluster metrics
-- 🔄 Dynamic node scaling
-- 🛡️ Built-in security and RBAC
+**What it does**: takes a request over HTTP and turns it into a k0rdent
+`ClusterDeployment` on the management cluster, then reads that object's status
+back. It does **not** build clusters — k0rdent does, through Cluster API and
+Helm. KCM has no REST interface of its own; what it offers is the Kubernetes
+API with its CRDs, and this service is the façade in front of it.
+
+**What it does not decide**: which template, which credential, which location,
+which machine types. `console-api` resolves those from its `provider_regions`
+and `provider_sizes` tables and sends them along. This service only knows what
+a Hetzner and an AWS `ClusterDeployment` look like — they differ in the key
+for the machine type (`type` vs `instanceType`) and the SSH key field, and
+nowhere else.
 
 ---
 
 ## Status
 
-**🚧 Initial Development** - v0.1.0
+**Built, not yet deployed** — v0.2.0
 
-- ✅ Server implementation using `@enopax/resource-api`
-- ✅ Provider API integration complete
-- ✅ Bash script structure in place
-- 🚧 K8s cluster implementation (pending)
-- 🚧 kubectl and kubeadm integration (pending)
+- ✅ Creates, reads, scales and deletes k0rdent `ClusterDeployment` objects
+- ✅ Progress from the six conditions KCM maintains, not an invented list
+- ✅ Metrics from the child cluster, via the kubeconfig secret Cluster API writes
+- ✅ RBAC manifest in `deploy/rbac.yaml` — three rights, no admin
+- ✅ Container image; runs with a service-account kubeconfig outside the
+  cluster, or the pod's own token inside it
+- ⛔ Needs `@enopax/resource-api` ≥ 1.1.0, which is **not published yet**
+
+### What replaced the bash scripts
+
+Until v0.2.0 the operations were bash scripts, and they were a decoy:
+`provision.sh` applied a manifest, and the manifest was a **Namespace**. It
+reported `status: "active"` immediately without waiting for anything, ignored
+`workerNodes` and `k8sVersion` entirely, and wrote `# Kubeconfig will be
+generated here` into a file called `kubeconfig.yaml`. `metrics.sh` returned
+hard-wired zeros for nodes, pods, CPU and memory; the only real figure was
+uptime, computed with `date -j` — BSD syntax that does not run on Linux.
+
+They are gone. Dead code that looks like it works is worse than none.
+
+### Why handlers, not scripts
+
+`@enopax/resource-api` runs an operation as a bash script by default, which is
+right for short, stateless work. This provider holds a Kubernetes client with
+a token and a certificate; a script would rebuild it on every call and could
+keep nothing between two of them. Version 1.1.0 of the framework therefore
+accepts `handlers` — JavaScript functions in the server process — and falls
+back to scripts when a provider has none.
 
 ---
 

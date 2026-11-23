@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  labels:
-    created-by: cluster-provider
-    managed-by: cluster-provider
-  name: test

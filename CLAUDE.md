@@ -1,306 +1,260 @@
 # CLAUDE.md
 
 **AI Assistant Reference File**
-This file provides guidance to Claude Code when working with the Enopax Cluster Provider repository.
+Guidance for working with the Enopax Cluster Provider.
 
 ---
 
-## 📚 Project Overview
+## Was dieser Dienst ist
 
-**Name**: Enopax Cluster Provider
-**Purpose**: Kubernetes cluster provisioning for container orchestration
-**Status**: 🚧 Initial Development - Framework complete, K8s implementation pending
+Eine Fassade vor der Kubernetes-API des Management-Clusters. Er nimmt eine
+Anfrage entgegen, macht daraus ein k0rdent-`ClusterDeployment` und liest
+dessen Zustand zurueck. **Gebaut wird der Cluster von k0rdent**, ueber Cluster
+API und Helm - nicht hier. Es gibt kein kubeadm, kein kubectl und keine
+Bash-Skripte mehr; die frueheren Fassungen dieser Datei beschrieben all das,
+und nichts davon trifft noch zu.
 
-**Core Principle**: Enable container orchestration through easy-to-provision Kubernetes clusters integrated with the Enopax platform.
-
----
-
-## 🚀 Quick Start
-
-### Running the Server
-
-```bash
-# Install dependencies
-pnpm install
-
-# Start server
-pnpm dev
-
-# Server runs on http://localhost:3003
-# API endpoint: /v1/clusters
+```
+console-api ──▶ dieser Dienst ──▶ ClusterDeployment ──▶ k0rdent ──▶ Hetzner
 ```
 
-### Server Architecture
-
-This provider uses the `@enopax/resource-api` npm library for the server framework:
-
-```javascript
-// server.js
-const { createServer } = require('@enopax/resource-api');
-
-const app = createServer({
-  port: 3003,
-  authentication: { enabled: false, apiKey: '' },
-  providers: [{
-    apiVersion: 'v1',
-    endpoint: '/clusters',
-    scriptsFolder: './provider/cluster/scripts'
-  }]
-});
-
-app.listen(3003);
-```
-
-### Project Structure
+### Aufbau
 
 ```
 provider-cluster/
-├── server.js                  # Server using @enopax/resource-api
-├── package.json               # Dependencies
-├── provider/
-│   └── cluster/
-│       ├── config.json        # Provider configuration
-│       ├── scripts/           # CRUD operation scripts
-│       │   ├── common.sh
-│       │   ├── provision.sh
-│       │   ├── list.sh
-│       │   ├── status.sh
-│       │   ├── metrics.sh
-│       │   ├── update.sh
-│       │   └── deprovision.sh
-│       └── data/              # Cluster storage
-└── README.md
+├── server.js                      @enopax/resource-api mit handlers statt scriptsFolder
+├── Dockerfile
+├── deploy/rbac.yaml               ServiceAccount, Role, Binding, Token
+└── provider/cluster/
+    ├── config.json
+    ├── k0rdent.js                 reine Uebersetzung, ohne Cluster testbar
+    └── handlers.js                alles, was mit der Kubernetes-API spricht
 ```
 
----
+### Starten
 
-## 🎯 Project Goals
-
-### Primary Objectives
-1. **Cluster Deployment** - Simple provisioning of multi-node Kubernetes clusters
-2. **Container Orchestration** - Deploy and manage containerised applications
-3. **Auto-scaling** - Dynamic scaling of worker nodes
-4. **Health Monitoring** - Real-time cluster health and metrics
-5. **Resource API Integration** - Seamless integration with Enopax ecosystem
-
----
-
-## 🏗️ Architecture
-
-### Technology Stack
-
-**Backend**:
-- Node.js with `@enopax/resource-api`
-- Bash scripts for lifecycle operations
-
-**Kubernetes Stack**:
-- Kubernetes (K8s) for container orchestration
-- kubectl and kubeadm for cluster management
-- Docker/containerd for container runtime
-
-**Orchestration**:
-- Control plane (API server, scheduler, controller)
-- Worker nodes with kubelet
-- Pod networking and service discovery
-
----
-
-## 📂 Implementation Details
-
-### Bash Scripts
-
-**provision.sh**:
-- Creates cluster directory structure
-- Generates unique cluster ID
-- Stores configuration in cluster.json
-- TODO: Initialize K8s cluster with kubeadm
-
-**status.sh**:
-- Reads cluster configuration
-- Returns cluster status
-- TODO: Query actual K8s cluster health (kubectl get nodes)
-
-**metrics.sh**:
-- Calculates uptime
-- Measures resource usage
-- TODO: Get real metrics from K8s (kubectl top nodes/pods)
-
-**update.sh**:
-- Updates cluster configuration
-- Scales worker node count
-- TODO: Apply changes to running cluster (kubectl scale)
-
-**list.sh**:
-- Lists all clusters for org/project
-- Filters by organisation and project slugs
-
-**deprovision.sh**:
-- Removes cluster directory
-- TODO: Stop Docker containers and cleanup
-
----
-
-## 🔧 Resource API Integration
-
-### Standard Endpoints
-
-Following the Enopax Resource API pattern:
-
-**Discovery**:
 ```bash
-GET /providers/info
-# Returns cluster provider metadata
+npm install
+KUBECONFIG=<kubeconfig des Management-Clusters> npm start
 ```
 
-**Provision**:
-```bash
-POST /v1/clusters
-# Input: name, workerNodes, k8sVersion, org, project
-# Output: cluster ID, status
-```
-
-**Status**:
-```bash
-GET /v1/clusters/:id
-# Returns: cluster status, configuration
-```
-
-**Metrics**:
-```bash
-GET /v1/clusters/:id/metrics
-# Returns: uptime, nodes, pods, CPU/memory usage
-```
-
-**Update**:
-```bash
-PUT /v1/clusters/:id
-# Update: worker node count
-```
-
-**Delete**:
-```bash
-DELETE /v1/clusters/:id
-# Stop cluster and clean up
-```
+Im Cluster selbst braucht es kein KUBECONFIG - `handlers.js` nimmt dann das
+Token des Pods.
 
 ---
 
-## 💡 Use Cases
+## Handler statt Skripte
 
-### Container Orchestration
-- Microservices deployment
-- Service discovery and load balancing
-- Auto-scaling based on metrics
+Die Operationen sind JavaScript-Funktionen in `provider/cluster/handlers.js`,
+keine Bash-Skripte. Der Rahmen (`@enopax/resource-api` ≥ 1.1.0) nimmt beides;
+hier sind es Funktionen, weil der Kubernetes-Client sonst bei jedem Aufruf neu
+aufgebaut wuerde und zwischen zwei Aufrufen nichts bleibt.
 
-### Development & Testing
-- Development environments
-- CI/CD integration
-- Ephemeral test clusters
+`provider/cluster/k0rdent.js` ist die reine Uebersetzung — Anfrage hinein,
+ClusterDeployment heraus — und laesst sich ohne Cluster testen. `handlers.js`
+ist alles, was mit der Kubernetes-API spricht.
 
-### Production Workloads
-- High availability applications
-- Rolling updates
-- Resource quotas and limits
+## Der Dialekt haengt an der Vorlage, nicht am Anbieter
 
----
+`DIALECTS` in `k0rdent.js` ist nach Vorlagenfamilie geordnet, nicht nach
+Anbieter. Zu Hetzner gehoeren zwei gueltige Familien, und sie sind sich in
+fast keinem Feld einig:
 
-## 📋 Development Guidelines
-
-### Code Standards
-- **Language**: Bash for scripts, Node.js for server
-- **Documentation**: Comprehensive inline comments
-- **Testing**: Manual script testing required
-- **British English**: Consistent spelling throughout
-
-### Workflow
-1. **Branching**: Feature branches for all changes
-2. **Commits**: Semantic commit messages
-3. **Pull Requests**: Required for all changes
-4. **Testing**: Test scripts before committing
-
-### Best Practices
-- **Never** expose sensitive data in logs
-- **Always** validate input in bash scripts
-- **Always** use proper error handling
-- **Never** assume cluster is running (check status)
-- **Always** clean up resources on deprovision
-
----
-
-## 🚀 Implementation Phases
-
-### Phase 1: Foundation (Complete)
-- ✅ Server using `@enopax/resource-api`
-- ✅ Bash script structure
-- ✅ Basic CRUD operations (file-based)
-- ✅ Documentation
-
-### Phase 2: K8s Integration (Next)
-- [ ] Kubernetes cluster initialisation with kubeadm
-- [ ] Control plane and worker node deployment
-- [ ] kubectl configuration
-- [ ] Node health monitoring
-
-### Phase 3: Production Features
-- [ ] Dynamic node scaling
-- [ ] Cluster upgrades
-- [ ] Advanced metrics (kubectl top)
-- [ ] Persistent volume management
-
----
-
-## 📚 Documentation
-
-### Project Documentation
-
-- **[README.md](./README.md)** - User-facing documentation
-- **[docs/concept.md](./docs/concept.md)** - Core concepts
-- **[docs/architecture.md](./docs/architecture.md)** - Detailed architecture
-- **[CLAUDE.md](./CLAUDE.md)** - This file
-
-### Related Documentation
-
-- **[Resource API docs](../resource-api/)** - Resource API integration patterns
-- **[Platform docs](../platform/)** - Platform integration
-- **[Orga CLAUDE.md](../orga/CLAUDE.md)** - Organisation structure
-
----
-
-## 🐛 Debugging
-
-### Common Issues
-
-**Cluster not found**:
-- Check ID format: `orgslug-projectslug-name`
-- Verify cluster directory exists
-- Check data path in common.sh
-
-**Provision fails**:
-- Validate input JSON
-- Check for existing cluster with same name
-- Review logs in stderr
-
-**Scripts not executable**:
-```bash
-chmod +x provider/cluster/scripts/*.sh
+```
+HETZNER_STANDALONE   sshKeyNames[]  worker.type        workersNumber  tokenRef
+HETZNER_HOSTED       sshKeyName     worker.serverType  worker.replicas
 ```
 
----
+Die Vorgaengerfassung hielt die Felder am Anbieternamen fest und konnte damit
+nur eine der beiden bauen. Welchen Dialekt eine Vorlage spricht, weiss
+console-api aus `provider_templates` und schickt es mit.
 
-## 📝 Next Steps
+`PLANNED_DIALECTS` ist die Liste dessen, was wir noch nicht *uebersetzen* -
+nicht dessen, was nicht geht. Sie ist derzeit leer. Wer einen neuen Anbieter
+aufnimmt, traegt ihn dort ein, bis die Uebersetzung steht.
 
-### Immediate Tasks
-1. Implement kubeadm cluster initialisation
-2. Deploy control plane and worker nodes
-3. Generate kubeconfig for access
-4. Implement real metrics gathering (kubectl)
+## Die bewaehrten Manifeste sind die Quelle
 
-### Future Enhancements
-1. High availability control plane
-2. Multi-cloud deployment
-3. Advanced monitoring dashboard
-4. Helm chart support
+Dreimal hat dieser Dienst ein ClusterDeployment erzeugt, das die
+Kubernetes-API annahm und k0rdent nicht fertigbauen konnte. Jedes Mal stand
+die richtige Antwort in einem Manifest unter `K0Cluster/`, das schon gelaufen
+war:
 
----
+| Was gebaut hat | Variante |
+|---|---|
+| `cluster/terraform/manifests/regions/eu1-fsn1/clusterdeployment.yaml` | PRIVATE, der laufende Regional |
+| `cluster/terraform/manifests/eu1f-test01.yaml` | PAAS, Ready 5/5 |
+| `k0cluster/manifests/user-cluster/cluster-standalone.yaml` | PRIVATE, Referenz |
 
-*This provider is in initial development. Server framework is complete, K8s integration is pending.*
+`test/k0rdent.test.js` haelt genau diese Fassungen fest, feldgleich. Die
+Chart-Vorgaben zu rekonstruieren ist der Weg, der dreimal falsch war -
+nachsehen, nicht herleiten.
+
+## Was der PaaS-Cluster ausserdem braucht
+
+Der hosted-Dialekt unterscheidet sich nicht nur in Feldnamen:
+
+- **`ingress.apiHost` / `konnectivityHost`**, je Cluster und Region:
+  `api.<name>.<childApiDomain>`. Die Steuerungsebene laeuft auf dem regionalen
+  Cluster und wird ueber dessen Ingress bedient - ohne den Namen initialisiert
+  sie nie.
+- **`hetznerSecretName`**, und das ist *nicht* `tokenRef`. Der hosted-Chart
+  zeigt mit `HetznerCluster.spec.hetznerSecretRef` auf ein anderes Secret auf
+  dem regionalen Cluster und legt dessen Schluessel selbst auf `hcloud` fest.
+  Zwei Secrets, zwei Schluessel, ein Anbieter.
+- **`serviceSpec`** mit cert-manager, und nur damit: die Vorlage bringt es
+  nicht mit, anders als standalone, und KOFs otel-operator braucht die
+  Certificate-CRDs.
+- **die KOF-Labels**, sonst erreicht die Konfiguration des Kindes den
+  regionalen Cluster nicht und `kof-operators` scheitert FailedNonRetriable.
+- **`clusterNetwork.pods.cidrBlock`** im Singular, waehrend standalone
+  `cidrBlocks` als Liste nimmt.
+
+Namen und Werte der Dienste stehen in `HOSTED_SERVICES` und nicht in der
+Datenbank, weil sie eine Einheit bilden: ein anderer cert-manager-Stand kann
+andere Schluessel verlangen. Ein Versionssprung ist deshalb eine Freigabe
+dieses Dienstes, keine Datenpflege.
+
+## Das CNI kommt vom Chart, nicht von hier
+
+`HOSTED_SERVICES` lieferte einmal auch **Cilium** mit, mit dem Kommentar
+„weil der Cluster sonst kein CNI hat". Das war nicht geprueft, sondern
+angenommen: die hosted-Vorlage installiert Cilium selbst, ueber die
+k0s-Extensions in `templates/k0smotroncontrolplane.yaml` - zusammen mit
+hcloud-ccm und hcloud-csi, die wir hier nie mitgeliefert haben.
+
+Beide Wege gleichzeitig haben sich ueberschrieben, belegt im Kindcluster von
+`dev-dose`:
+
+```
+helm -n kube-system history cilium
+1  13:39:11  superseded  cilium-1.19.4  Install complete   <- Chart, k0s-Extension
+2  13:48:56  deployed    cilium-1.18.1  Upgrade complete   <- dieser Dienst, Sveltos
+```
+
+Eine Rueckdatierung des CNI auf einem Cluster, der schon lief, neun Minuten
+nach seiner Geburt, mit anderem Tunnelprotokoll (geneve statt vxlan). Dass es
+gut ging, war Glueck.
+
+**Die Regel daraus:** was das Chart mitbringt, bringen wir nicht noch einmal
+mit. Wer einen Dienst in `HOSTED_SERVICES` eintraegt, sieht vorher in
+`templates/k0smotroncontrolplane.yaml` nach, ob er schon von dort kommt - und
+in `helm list` im Kindcluster, ob er schon laeuft.
+
+Fuer bestehende Cluster ist das kein stiller Wechsel: nimmt man den Dienst aus
+dem `serviceSpec` eines laufenden Clusters, **deinstalliert Sveltos ihn** -
+beim CNI heisst das, dem Cluster das Netz zu nehmen, bis k0s seine Extension
+nachzieht. Ein bestehender Cluster wird deshalb neu gebaut und nicht
+umgestellt.
+
+**1.5.0 baut nicht.** Dort fehlte `HetznerCluster.spec.sshKeys`; 1.5.1 stellt
+es wieder her.
+
+Und eine Falle, die Daten kostet: **niemals den `kmc-*`-Pod eines haengenden
+Kindes loeschen.** Die hosted-Vorlage benutzt `persistence: emptyDir`; das
+Loeschen wischt den Zustand der Steuerungsebene und macht den Cluster
+unrettbar. Eine Testinstanz ist so zerstoert worden.
+
+## Der Betrieb des regionalen Clusters
+
+Ein PaaS-Cluster setzt auf dem regionalen Cluster Dinge voraus, die kein
+Katalogwert sind und bis heute manuell eingerichtet werden
+(enopax/cluster#26):
+
+- der **`sysctl-inotify`-DaemonSet**. `fs.inotify.max_user_instances` steht
+  standardmaessig auf 128 und ist ein Limit **pro UID**, geteilt von allen
+  root-Containern eines Nodes. Der Regional traegt KOF, Envoy, HAProxy und je
+  Kind eine Steuerungsebene. Darueber kann k0s keine Watcher anlegen und sein
+  Controller-Manager startet nie - das Symptom ist ein kubelet-CSR, das
+  `Pending` bleibt und auch nach Genehmigung ungezeichnet. Genau deshalb
+  liefen hosted children immer auf mgmt und nie auf dem Regional.
+- das `hcloud-...-resource-template` (sonst `CreateContainerConfigError` im
+  CCM des Kindes), das Secret `hetzner`, der LoadBalancer
+  `ep-eu1-fsn1-childapi` vor `haproxy-ingress`, `external-dns-childapi` und
+  das Label `kcm-region-cluster=true` am regionalen ClusterDeployment.
+
+## Was hier nicht entschieden wird## Was hier nicht entschieden wird
+
+Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
+`provider_regions` und `provider_sizes`. Wer sie hier noch einmal nachschlaegt,
+baut eine zweite Kopie derselben Zuordnung, und zwei Kopien laufen auseinander.
+
+## Gemessen, nicht geraten - und nicht ungemessen behauptet
+
+`nodeUsage` liest `metrics.k8s.io` im Kindcluster. Zwei Rechenregeln, die
+keine Geschmacksfrage sind:
+
+- **gegen `allocatable`, nicht `capacity`** - was das System sich reserviert,
+  kann der Kunde nicht benutzen, und ein Prozentwert gegen die Rohkapazitaet
+  sieht harmloser aus als er ist
+- **ueber den Cluster nach Kapazitaet gewichtet**, nicht als Mittelwert der
+  Prozentwerte. Zwei Knoten verschiedener Groesse ergaeben sonst eine Zahl,
+  die keiner Maschine entspricht: 2,1 von 6 Kernen sind 35 %, der Mittelwert
+  waere 27,5
+
+Hier stand vorher `cpuUsagePercent: null` mit dem Kommentar, es fehle der
+`metrics-server` im Kindcluster. **Das war nicht gemessen, sondern vermutet** -
+k0s bringt ihn in beiden Varianten mit, und `kubectl top nodes` liefert dort
+echte Zahlen. Ich habe das Ticket dazu mit derselben falschen Annahme
+geschrieben, weil ich den Kommentar fuer einen Befund hielt.
+
+Ein Kommentar, der eine Luecke behauptet, gehoert mit einem Beleg versehen
+oder nachgeprueft, bevor er weitergetragen wird.
+
+## Nie erfinden
+
+`metrics` liefert `cpuUsagePercent: null`, wenn nichts es misst, und sagt
+`available: false`, solange es die kubeconfig des Kindclusters nicht gibt. Die
+Vorgaengerfassung schrieb an beiden Stellen 0 - und ein Cluster mit 0 % CPU
+liest sich wie ein leerer, nicht wie ein unbekannter.
+
+## Gescheitert heisst endgueltig, nicht "noch nicht fertig"
+
+`readStatus` erkennt Scheitern an `FailedNonRetriable` - der Stelle, an der
+k0rdent und Sveltos aufgeben. Nicht an irgendeinem Grund, der „Failed"
+enthaelt.
+
+Hier stand einmal: irgendeine Bedingung mit `False` und einem Grund, der
+`/fail|error/` trifft. Das traf `ServicesInReadyState` mit dem Grund `Failed`
+und der Meldung `1/4` - einer von vier mitgelieferten Diensten ist oben,
+mitten im Bau der Normalfall. Der Cluster `dev-dose` stand dadurch zwei
+Minuten nach dem Anlegen als FAILED in der Datenbank, waehrend seine beiden
+Server liefen.
+
+Dass das erst jetzt auffiel, lag an einem zweiten Fehler: die Status-Abfrage
+lief in einen 404, weil die Kennung einen Schraegstrich traegt und
+`/v1/clusters/:id` ein Segment ist. Solange nie ein Status ankam, konnte auch
+keiner falsch sein. **Ein verdeckter Fehler wird nicht kleiner.**
+
+Die Kehrseite ist offen und bekannt: ein Cluster, der an derselben Bedingung
+haengt, bleibt jetzt „im Bau". Wie lange das erlaubt ist, braucht eine
+Zeitgrenze und ist eine Produktfrage - enopax/enopax#33.
+
+## Was der Dry-Run beweist - und was nicht
+
+`dryRun: 'All'` an der Kubernetes-API laesst die Admission-Webhooks das
+ClusterDeployment pruefen, ohne es zu speichern und ohne einen Server
+anzulegen. Das faengt Tippfehler, falsche Vorlagennamen und unbekannte Felder.
+
+**Es faengt nicht, was die Helm-Vorlage daraus macht.** Der erste echte
+Durchlauf scheiterte genau dort: das ClusterDeployment war gueltig, und
+danach lehnte CAPH den gerenderten `HetznerCluster` ab, weil `spec.sshKeys`
+fehlte. Zwischen "die API nimmt es an" und "k0rdent kann es bauen" liegt ein
+Schritt, den der Dry-Run nicht sieht.
+
+Beim zweiten Lauf passierte dasselbe eine Etage weiter: der Helm-Install
+gelang, und dann meldete CAPH `HCloudTokenAvailable: invalid or not specified
+hcloud token in Hetzner secret`. Die Vorlage hat fuer `tokenRef` keinen
+brauchbaren Vorgabewert - der Name ist leer, und den Schluessel nennt sie
+`hcloud-token`, waehrend unser Secret ihn als `HCLOUD_TOKEN` fuehrt.
+
+Was dagegen hilft: Pflichtfelder je Dialekt in `DIALECTS` fuehren und vor dem
+Anlegen pruefen - `sshKeysRequired`, `tokenRefRequired`, und `workersNumber`
+und die k0s-Schreibweise direkt in `buildClusterDeployment`. Jede neue
+Pflichtangabe gehoert dorthin, sonst findet sie erst der Betrieb.
+
+Und: nachsehen, nicht rekonstruieren. Die bewaehrten Manifeste unter
+`K0Cluster/` - `cluster/terraform/manifests/regions/eu1-fsn1/` und
+`k0cluster/manifests/user-cluster/cluster-standalone.yaml` - zeigen, welche
+Felder ein Cluster wirklich braucht. Beide gescheiterten Laeufe haetten das
+vorher verraten.

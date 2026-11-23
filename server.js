@@ -5,6 +5,8 @@
  */
 
 const { createServer } = require('@enopax/resource-api');
+const handlers = require('./provider/cluster/handlers');
+const { registerRoutes } = require('./provider/cluster/routes');
 
 // Create server with cluster provider configuration
 const app = createServer({
@@ -18,10 +20,17 @@ const app = createServer({
     {
       apiVersion: 'v1',
       endpoint: '/clusters',
-      scriptsFolder: './provider/cluster/scripts'
+      // Funktionen statt Skripte: der Kubernetes-Client wird einmal aufgebaut
+      // und nicht bei jedem Aufruf. Die alten Skripte liegen bis zum Aufraeumen
+      // daneben; sie legten einen Namespace an und nannten das einen Cluster.
+      providerFolder: './provider/cluster',
+      handlers
     }
   ]
 });
+
+// Die Routen, die der Rahmen nicht kennt - siehe provider/cluster/routes.js.
+registerRoutes(app, handlers);
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || 'localhost';
@@ -37,6 +46,7 @@ app.listen(PORT, HOST, () => {
   console.log(`    - POST   /v1/clusters`);
   console.log(`    - GET    /v1/clusters/:id`);
   console.log(`    - GET    /v1/clusters/:id/metrics`);
+  console.log(`    - GET    /v1/clusters/:id/kubeconfig`);
   console.log(`    - PUT    /v1/clusters/:id`);
   console.log(`    - DELETE /v1/clusters/:id`);
   console.log(`\n`);
