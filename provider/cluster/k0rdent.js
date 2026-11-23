@@ -20,6 +20,13 @@ const PLURAL = 'clusterdeployments';
 const DEFAULT_NAMESPACE = process.env.KCM_NAMESPACE || 'kcm-system';
 
 /**
+ * Die Netze, die beide Dialekte benutzen. Sie stehen so in jeder belegten
+ * Fassung; was der Kunde waehlt, ist sie nicht.
+ */
+const PODS_CIDR = '10.244.0.0/16';
+const SERVICES_CIDR = '10.96.0.0/12';
+
+/**
  * Die Konfigurationssprachen der Vorlagen.
  *
  * Der Dialekt haengt an der Vorlagenfamilie, nicht am Anbieter. Zu Hetzner
@@ -52,6 +59,31 @@ const DIALECTS = {
     // "HCloudTokenAvailable: invalid or not specified hcloud token".
     tokenRefRequired: true,
   },
+  /**
+   * Der PaaS-Cluster: die Steuerungsebene laeuft als Pods auf dem regionalen
+   * Cluster, der Kunde zahlt nur Worker.
+   *
+   * Nachgebaut aus `K0Cluster/cluster/terraform/manifests/eu1f-test01.yaml` -
+   * der Fassung, die Ready 5/5 erreicht hat. Jede Abweichung davon ist eine
+   * Vermutung, und zwei dieser Vermutungen haben diesen Dienst schon zweimal
+   * zum Scheitern gebracht.
+   */
+  HETZNER_HOSTED: {
+    sshKeysRequired: true,
+    // Nicht `tokenRef`. Der hosted-Chart verweist mit
+    // `HetznerCluster.spec.hetznerSecretRef` auf ein *anderes* Secret auf dem
+    // regionalen Cluster, dessen Schluessel er selbst auf `hcloud` festlegt -
+    // waehrend standalone `tokenRef` mit `HCLOUD_TOKEN` nimmt. Zwei Secrets,
+    // zwei Schluessel, ein Anbieter.
+    tokenRefRequired: false,
+    hostedSecretRequired: true,
+    // Ohne erreichbare API initialisiert die Steuerungsebene nie: sie laeuft
+    // auf dem regionalen Cluster und wird von aussen ueber dessen Ingress
+    // bedient.
+    ingressRequired: true,
+    build: buildHostedConfig,
+  },
+
   AWS_STANDALONE: {
     machineTypeKey: 'instanceType',
     sshKeysRequired: false,
@@ -61,39 +93,123 @@ const DIALECTS = {
   },
 };
 
+/** `api.<name>.<domain>` und `k.<name>.<domain>`, wie in der belegten Fassung. */
+function ingressHosts(name, childApiDomain) {
+  return {
+    apiHost: `api.${name}.${childApiDomain}`,
+    konnectivityHost: `k.${name}.${childApiDomain}`,
+  };
+}
+
+/**
+ * Der Konfigurationsteil des PaaS-Clusters.
+ *
+ * Eigene Funktion, weil er sich vom standalone-Dialekt nicht in einzelnen
+ * Feldnamen unterscheidet, sondern im Aufbau: kein `controlPlaneNumber` (die
+ * Steuerungsebene ist kein Server), `worker.replicas` statt `workersNumber`,
+ * `cidrBlock` im Singular statt `cidrBlocks` als Liste.
+ */
+function buildHostedConfig(req) {
+  const { apiHost, konnectivityHost } = ingressHosts(req.name, req.childApiDomain);
+  const machine = (type, replicas) => ({
+    serverType: type,
+    imageName: req.nodeImage || 'ubuntu-24.04',
+    replicas,
+  });
+
+  return {
+    clusterName: req.name,
+    region: req.region,
+    // Singular. Der hosted-Chart nimmt genau einen Namen, standalone eine Liste.
+    sshKeyName: req.sshKeyNames[0],
+    hetznerSecretName: req.hostedSecretName,
+    clusterNetwork: {
+      pods: { cidrBlock: PODS_CIDR },
+      services: { cidrBlock: SERVICES_CIDR },
+    },
+    // `core` ist der statische Knotenpool, `worker` der skalierbare. Die
+    // belegte Fassung liess `core` auf der Chart-Vorgabe stehen - hier steht
+    // er ausdruecklich, damit der Maschinentyp unserer ist und die Knotenzahl
+    // bekannt. Ein PaaS-Cluster hat damit `workersNumber + 1` Knoten.
+    core: machine(req.workerType, 1),
+    worker: machine(req.workerType, req.workersNumber),
+    ingress: { enabled: true, apiHost, konnectivityHost },
+  };
+}
+
+/**
+ * Die Dienste, die ein PaaS-Cluster mitbekommt.
+ *
+ * cert-manager, weil die hosted-Vorlage es nicht mitbringt - anders als
+ * standalone - und KOFs otel-operator die Certificate-CRDs braucht. Cilium,
+ * weil der Cluster sonst kein CNI hat; sein `k8sServiceHost` muss derselbe
+ * apiHost sein, sonst findet kein Pod die API.
+ *
+ * Namen und Werte stehen hier und nicht in der Datenbank, weil sie eine
+ * Einheit bilden: die Cilium-Werte verweisen auf den apiHost, und ein anderer
+ * Cilium-Stand kann andere Schluessel verlangen. Ein Versionssprung ist
+ * deshalb eine Freigabe dieses Dienstes, keine Datenpflege.
+ */
+const HOSTED_SERVICES = {
+  certManager: 'cert-manager-v1-19-3',
+  cilium: 'cilium-1-18-1',
+};
+
+function buildHostedServiceSpec(req) {
+  const { apiHost } = ingressHosts(req.name, req.childApiDomain);
+  return {
+    services: [
+      {
+        template: HOSTED_SERVICES.certManager,
+        name: 'cert-manager',
+        namespace: 'cert-manager',
+        values: 'crds:\n  enabled: true\n',
+      },
+      {
+        template: HOSTED_SERVICES.cilium,
+        name: 'cilium',
+        namespace: 'kube-system',
+        values: [
+          `k8sServiceHost: ${apiHost}`,
+          'k8sServicePort: "443"',
+          'ipam:',
+          '  mode: cluster-pool',
+          '  operator:',
+          '    clusterPoolIPv4PodCIDRList:',
+          `      - "${PODS_CIDR}"`,
+          'tunnelProtocol: geneve',
+          'ipv4:',
+          '  enabled: true',
+          'ipv6:',
+          '  enabled: false',
+          'hubble:',
+          '  relay:',
+          '    enabled: false',
+          '  ui:',
+          '    enabled: false',
+          'envoy:',
+          '  enabled: false',
+          'operator:',
+          '  replicas: 1',
+          '  tolerations:',
+          '    - operator: Exists',
+          '',
+        ].join('\n'),
+      },
+    ],
+  };
+}
+
 /**
  * Dialekte, die wir kennen und noch nicht erzeugen.
  *
- * HETZNER_HOSTED ist der PaaS-Cluster. Er ist **nicht unerprobt** - er hat
- * reproduzierbar gebaut: `eu1f-test01` erreichte Ready 5/5 mit Steuerungsebene
- * und etcd auf zwei regionalen Workern und null kmc-Pods auf dem
- * Management-Cluster. Die bewaehrte Fassung steht in
- * `K0Cluster/cluster/terraform/manifests/eu1f-test01.yaml`; der Betrieb des
- * regionalen Clusters traegt die Voraussetzungen dafuer bis heute.
- *
- * Was fehlt, ist allein die Uebersetzung hier. Dazu gehoert mehr als andere
- * Feldnamen:
- *
- *   - `ingress.apiHost` und `ingress.konnectivityHost`, je Cluster und je
- *     Region: `api.<name>.<region>.k8s.enopax.io`. Ohne sie initialisiert die
- *     Steuerungsebene nicht.
- *   - `serviceSpec` mit zwei Diensten: cert-manager (die Vorlage bringt es
- *     nicht mit, KOFs otel-operator braucht die Certificate-CRDs) und Cilium,
- *     dessen `k8sServiceHost` denselben apiHost traegt.
- *   - die KOF-Labels, die das Kind seinem regionalen Cluster und seinem
- *     Mandanten zuordnen.
- *   - `clusterNetwork.pods.cidrBlock` - Singular, waehrend standalone
- *     `cidrBlocks` als Liste verlangt.
- *
- * Und eine Falle, die Geld kostet: **1.5.0 baut nicht.** Dort fehlte
- * `HetznerCluster.spec.sshKeys`; 1.5.1 stellt es wieder her. Die Vorlage in
- * provider_templates muss 1-5-1 sein.
+ * Derzeit keiner. HETZNER_HOSTED stand hier, solange die Uebersetzung fehlte;
+ * gebaut hatte er da laengst - `eu1f-test01` erreichte Ready 5/5. Wer einen
+ * neuen Anbieter aufnimmt, traegt ihn hier ein, bis die Uebersetzung steht:
+ * eine Absage mit Grund ist besser als ein Objekt, das k0rdent nicht
+ * fertigbauen kann.
  */
-const PLANNED_DIALECTS = {
-  HETZNER_HOSTED:
-    'the PaaS cluster is proven (eu1f-test01 reached Ready 5/5) but not translated here yet: ' +
-    'it needs per-cluster ingress hosts, a serviceSpec with cert-manager and Cilium, and the KOF labels',
-};
+const PLANNED_DIALECTS = {};
 
 /**
  * Baut das ClusterDeployment.
@@ -139,6 +255,23 @@ function buildClusterDeployment(req) {
     );
   }
 
+  if (shape.hostedSecretRequired && !req.hostedSecretName) {
+    throw new Error(
+      `Dialect "${req.dialect}" requires hostedSecretName — the secret on the regional ` +
+        'cluster that HetznerCluster.spec.hetznerSecretRef points at. It is not the same ' +
+        'secret as tokenSecretName, and the chart fixes its key to "hcloud". ' +
+        'See provider_regions.hostedSecretName.',
+    );
+  }
+
+  if (shape.ingressRequired && !req.childApiDomain) {
+    throw new Error(
+      `Dialect "${req.dialect}" requires childApiDomain — the control plane runs on the ` +
+        'regional cluster and is reached through its ingress, so without api.<name>.<domain> ' +
+        'it never initialises. See provider_regions.childApiDomain.',
+    );
+  }
+
   if (shape.tokenRefRequired && !(req.tokenSecretName && req.tokenSecretKey)) {
     throw new Error(
       `Dialect "${req.dialect}" requires tokenSecretName and tokenSecretKey; ` +
@@ -165,19 +298,24 @@ function buildClusterDeployment(req) {
     );
   }
 
-  const machine = (type) => ({ [shape.machineTypeKey]: type });
-
-  const config = {
-    region: req.region,
-    controlPlaneNumber: req.controlPlaneNumber,
-    workersNumber: req.workersNumber,
-    controlPlane: machine(req.controlPlaneType),
-    worker: machine(req.workerType),
-    ...shape.sshKeys(sshKeyNames),
-  };
-
-  if (shape.tokenRefRequired) {
-    config.tokenRef = { name: req.tokenSecretName, key: req.tokenSecretKey };
+  // Dialekte mit eigenem Aufbau bauen selbst; die uebrigen teilen die
+  // standalone-Form, die sich nur in zwei Feldnamen unterscheidet.
+  let config;
+  if (shape.build) {
+    config = shape.build({ ...req, sshKeyNames });
+  } else {
+    const machine = (type) => ({ [shape.machineTypeKey]: type });
+    config = {
+      region: req.region,
+      controlPlaneNumber: req.controlPlaneNumber,
+      workersNumber: req.workersNumber,
+      controlPlane: machine(req.controlPlaneType),
+      worker: machine(req.workerType),
+      ...shape.sshKeys(sshKeyNames),
+    };
+    if (shape.tokenRefRequired) {
+      config.tokenRef = { name: req.tokenSecretName, key: req.tokenSecretKey };
+    }
   }
 
   // Nur setzen, wenn gewuenscht: ohne Angabe nimmt die Vorlage ihre eigene
@@ -194,6 +332,7 @@ function buildClusterDeployment(req) {
         'enopax.io/managed': 'true',
         ...(req.organisationSlug ? { 'enopax.io/organisation': req.organisationSlug } : {}),
         ...(req.projectSlug ? { 'enopax.io/project': req.projectSlug } : {}),
+        ...kofLabels(req, shape),
       },
       // Namen duerfen hier stehen, Labels vertragen keine Leerzeichen.
       annotations: {
@@ -206,7 +345,31 @@ function buildClusterDeployment(req) {
       credential: req.credential,
       ...(req.dryRun ? { dryRun: true } : {}),
       config,
+      ...(shape.build === buildHostedConfig ? { serviceSpec: buildHostedServiceSpec(req) } : {}),
     },
+  };
+}
+
+/**
+ * Die Labels, mit denen KOF ein Kind seinem regionalen Cluster und seinem
+ * Mandanten zuordnet.
+ *
+ * Nur fuer Dialekte mit Ingress, also fuer den PaaS-Cluster: beim standalone
+ * traegt der Cluster seinen KOF-Teil selbst. Der Mandant ist die Organisation
+ * - daran haengt die Trennung der Messwerte in Grafana, und zwei
+ * Organisationen unter einer Mandanten-Kennung saehen einander zu.
+ */
+function kofLabels(req, shape) {
+  if (!shape.ingressRequired) return {};
+  if (!req.regionalClusterName) return {};
+  return {
+    'k0rdent.mirantis.com/kof-cluster-role': 'child',
+    'k0rdent.mirantis.com/kof-regional-cluster-name': req.regionalClusterName,
+    'k0rdent.mirantis.com/kof-regional-cluster-namespace':
+      req.regionalClusterNamespace || DEFAULT_NAMESPACE,
+    ...(req.organisationSlug
+      ? { 'k0rdent.mirantis.com/kof-tenant-id': req.organisationSlug }
+      : {}),
   };
 }
 

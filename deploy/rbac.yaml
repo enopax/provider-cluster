@@ -30,8 +30,14 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Nur lesen: welche Vorlagen und Credentials es gibt, entscheidet der
   # Betrieb des Management-Clusters, nicht dieser Dienst.
+  #
+  # `servicetemplates` steht dabei, weil der PaaS-Cluster zwei Dienste
+  # mitbekommt - cert-manager und Cilium - und beide als ServiceTemplate im
+  # Management-Cluster liegen muessen. Ohne Leserecht kann dieser Dienst vor
+  # dem Anlegen nicht pruefen, ob sie da sind, und ein fehlender Name faellt
+  # erst auf, wenn der Cluster schon laeuft und kein CNI hat.
   - apiGroups: ["k0rdent.mirantis.com"]
-    resources: ["clustertemplates", "credentials"]
+    resources: ["clustertemplates", "credentials", "servicetemplates"]
     verbs: ["get", "list", "watch"]
   # Die kubeconfigs der Kindcluster, fuer die Metriken.
   - apiGroups: [""]

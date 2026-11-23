@@ -70,19 +70,78 @@ nur eine der beiden bauen. Welchen Dialekt eine Vorlage spricht, weiss
 console-api aus `provider_templates` und schickt es mit.
 
 `PLANNED_DIALECTS` ist die Liste dessen, was wir noch nicht *uebersetzen* -
-nicht dessen, was nicht geht. HETZNER_HOSTED, der PaaS-Cluster, hat
-reproduzierbar gebaut: `eu1f-test01` erreichte Ready 5/5 mit Steuerungsebene
-und etcd auf regionalen Workern. Nachzulesen in
-`K0Cluster/cluster/terraform/manifests/eu1f-test01.yaml` und
-`K0Cluster/cluster/docs/progress_log.md`.
+nicht dessen, was nicht geht. Sie ist derzeit leer. Wer einen neuen Anbieter
+aufnimmt, traegt ihn dort ein, bis die Uebersetzung steht.
 
-Was zur Uebersetzung gehoert, steht im Kommentar an `PLANNED_DIALECTS`. Zwei
-Dinge daraus sind leicht zu uebersehen: die Vorlage **1.5.0 baut nicht** (dort
-fehlte `HetznerCluster.spec.sshKeys`, 1.5.1 stellt es wieder her), und
-`clusterNetwork.pods.cidrBlock` heisst im hosted-Dialekt Singular, waehrend
-standalone `cidrBlocks` als Liste nimmt.
+## Die bewaehrten Manifeste sind die Quelle
 
-## Was hier nicht entschieden wird
+Dreimal hat dieser Dienst ein ClusterDeployment erzeugt, das die
+Kubernetes-API annahm und k0rdent nicht fertigbauen konnte. Jedes Mal stand
+die richtige Antwort in einem Manifest unter `K0Cluster/`, das schon gelaufen
+war:
+
+| Was gebaut hat | Variante |
+|---|---|
+| `cluster/terraform/manifests/regions/eu1-fsn1/clusterdeployment.yaml` | PRIVATE, der laufende Regional |
+| `cluster/terraform/manifests/eu1f-test01.yaml` | PAAS, Ready 5/5 |
+| `k0cluster/manifests/user-cluster/cluster-standalone.yaml` | PRIVATE, Referenz |
+
+`test/k0rdent.test.js` haelt genau diese Fassungen fest, feldgleich. Die
+Chart-Vorgaben zu rekonstruieren ist der Weg, der dreimal falsch war -
+nachsehen, nicht herleiten.
+
+## Was der PaaS-Cluster ausserdem braucht
+
+Der hosted-Dialekt unterscheidet sich nicht nur in Feldnamen:
+
+- **`ingress.apiHost` / `konnectivityHost`**, je Cluster und Region:
+  `api.<name>.<childApiDomain>`. Die Steuerungsebene laeuft auf dem regionalen
+  Cluster und wird ueber dessen Ingress bedient - ohne den Namen initialisiert
+  sie nie.
+- **`hetznerSecretName`**, und das ist *nicht* `tokenRef`. Der hosted-Chart
+  zeigt mit `HetznerCluster.spec.hetznerSecretRef` auf ein anderes Secret auf
+  dem regionalen Cluster und legt dessen Schluessel selbst auf `hcloud` fest.
+  Zwei Secrets, zwei Schluessel, ein Anbieter.
+- **`serviceSpec`** mit cert-manager (die Vorlage bringt es nicht mit, anders
+  als standalone, und KOFs otel-operator braucht die Certificate-CRDs) und
+  Cilium, dessen `k8sServiceHost` derselbe apiHost sein muss.
+- **die KOF-Labels**, sonst erreicht die Konfiguration des Kindes den
+  regionalen Cluster nicht und `kof-operators` scheitert FailedNonRetriable.
+- **`clusterNetwork.pods.cidrBlock`** im Singular, waehrend standalone
+  `cidrBlocks` als Liste nimmt.
+
+Namen und Werte der Dienste stehen in `HOSTED_SERVICES` und nicht in der
+Datenbank, weil sie eine Einheit bilden: die Cilium-Werte verweisen auf den
+apiHost, und ein anderer Cilium-Stand kann andere Schluessel verlangen. Ein
+Versionssprung ist deshalb eine Freigabe dieses Dienstes, keine Datenpflege.
+
+**1.5.0 baut nicht.** Dort fehlte `HetznerCluster.spec.sshKeys`; 1.5.1 stellt
+es wieder her.
+
+Und eine Falle, die Daten kostet: **niemals den `kmc-*`-Pod eines haengenden
+Kindes loeschen.** Die hosted-Vorlage benutzt `persistence: emptyDir`; das
+Loeschen wischt den Zustand der Steuerungsebene und macht den Cluster
+unrettbar. Eine Testinstanz ist so zerstoert worden.
+
+## Der Betrieb des regionalen Clusters
+
+Ein PaaS-Cluster setzt auf dem regionalen Cluster Dinge voraus, die kein
+Katalogwert sind und bis heute manuell eingerichtet werden
+(enopax/cluster#26):
+
+- der **`sysctl-inotify`-DaemonSet**. `fs.inotify.max_user_instances` steht
+  standardmaessig auf 128 und ist ein Limit **pro UID**, geteilt von allen
+  root-Containern eines Nodes. Der Regional traegt KOF, Envoy, HAProxy und je
+  Kind eine Steuerungsebene. Darueber kann k0s keine Watcher anlegen und sein
+  Controller-Manager startet nie - das Symptom ist ein kubelet-CSR, das
+  `Pending` bleibt und auch nach Genehmigung ungezeichnet. Genau deshalb
+  liefen hosted children immer auf mgmt und nie auf dem Regional.
+- das `hcloud-...-resource-template` (sonst `CreateContainerConfigError` im
+  CCM des Kindes), das Secret `hetzner`, der LoadBalancer
+  `ep-eu1-fsn1-childapi` vor `haproxy-ingress`, `external-dns-childapi` und
+  das Label `kcm-region-cluster=true` am regionalen ClusterDeployment.
+
+## Was hier nicht entschieden wird## Was hier nicht entschieden wird
 
 Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
 `provider_regions` und `provider_sizes`. Wer sie hier noch einmal nachschlaegt,
