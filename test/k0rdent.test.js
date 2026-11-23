@@ -107,16 +107,24 @@ test('der PaaS Cluster ist feldgleich mit eu1f-test01', () => {
   );
   assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-tenant-id'], 'tenant-a');
 
-  // cert-manager, weil die hosted-Vorlage es nicht mitbringt; Cilium, weil
-  // der Cluster sonst kein CNI hat.
+  // cert-manager, weil die hosted-Vorlage es nicht mitbringt und KOFs
+  // otel-operator die Certificate-CRDs braucht. Und sonst nichts: das CNI
+  // kommt vom Chart ueber die k0s-Extensions, zusammen mit hcloud-ccm und
+  // hcloud-csi.
+  //
+  // Hier stand `['cert-manager-v1-19-3', 'cilium-1-18-1']`. Beide Wege
+  // gleichzeitig haben sich ueberschrieben - am laufenden `dev-dose` belegt:
+  // der Chart installierte Cilium 1.19.4, dieser Dienst neun Minuten spaeter
+  // 1.18.1 darueber. Eine Rueckdatierung des CNI auf einem Cluster, der
+  // schon lief.
   assert.deepStrictEqual(
     spec.serviceSpec.services.map((s) => s.template),
-    ['cert-manager-v1-19-3', 'cilium-1-18-1'],
+    ['cert-manager-v1-19-3'],
   );
-  // Findet Cilium die API nicht, startet kein Pod.
-  assert.match(
-    spec.serviceSpec.services[1].values,
-    /^k8sServiceHost: api\.eu1f-test01\.eu1-fsn1\.k8s\.enopax\.io$/m,
+  // Und keiner der Dienste darf ein CNI mitbringen - das ist der Punkt.
+  assert.ok(
+    spec.serviceSpec.services.every((s) => !/cilium/i.test(JSON.stringify(s))),
+    'ein mitgeliefertes Cilium wuerde das des Charts ueberschreiben',
   );
 });
 
@@ -190,12 +198,13 @@ test('die Stufen kommen aus den Bedingungen, nicht von hier', () => {
 test('die mitgelieferten Dienste werden vor dem Anlegen nachgesehen', async () => {
   const { setClient, provision } = require('../provider/cluster/handlers');
 
-  // Ein Management-Cluster, in dem Cilium fehlt.
+  // Ein Management-Cluster, in dem cert-manager fehlt - die Vorlage ist da,
+  // aber nicht gueltig.
   const created = [];
   setClient({
     objects: {
       listNamespacedCustomObject: async () => ({
-        items: [{ metadata: { name: 'cert-manager-v1-19-3' }, status: { valid: true } }],
+        items: [{ metadata: { name: 'cert-manager-v1-19-3' }, status: { valid: false } }],
       }),
       createNamespacedCustomObject: async (args) => {
         created.push(args);
@@ -206,8 +215,10 @@ test('die mitgelieferten Dienste werden vor dem Anlegen nachgesehen', async () =
 
   const result = await provision(PAAS);
   assert.strictEqual(result.success, false);
-  assert.match(result.error, /cilium-1-18-1/);
-  // Und zwar ohne dass etwas entstanden ist.
+  assert.match(result.error, /cert-manager-v1-19-3/);
+  // Und zwar ohne dass etwas entstanden ist: ein Cluster ohne die
+  // Certificate-CRDs laesst kof-operators FailedNonRetriable scheitern, und
+  // dann steht eine Maschine, die bezahlt wird und nichts tut.
   assert.strictEqual(created.length, 0);
 
   setClient(null);

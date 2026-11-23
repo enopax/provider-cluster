@@ -149,23 +149,39 @@ function buildHostedConfig(req) {
 /**
  * Die Dienste, die ein PaaS-Cluster mitbekommt.
  *
- * cert-manager, weil die hosted-Vorlage es nicht mitbringt - anders als
- * standalone - und KOFs otel-operator die Certificate-CRDs braucht. Cilium,
- * weil der Cluster sonst kein CNI hat; sein `k8sServiceHost` muss derselbe
- * apiHost sein, sonst findet kein Pod die API.
+ * Genau einer: **cert-manager**. Die hosted-Vorlage bringt es nicht mit -
+ * anders als standalone -, und KOFs otel-operator braucht die
+ * Certificate-CRDs.
+ *
+ * **Cilium stand hier und ist weg.** Das CNI kommt vom Chart, ueber die
+ * k0s-Extensions in `templates/k0smotroncontrolplane.yaml` - zusammen mit
+ * hcloud-ccm und hcloud-csi, die wir hier nie mitgeliefert haben. Beides
+ * gleichzeitig hat sich gegenseitig ueberschrieben, und zwar nachweislich am
+ * laufenden `dev-dose`:
+ *
+ *   helm -n kube-system history cilium   (im Kindcluster)
+ *   1  13:39:11  superseded  cilium-1.19.4  Install complete   <- Chart, k0s-Extension
+ *   2  13:48:56  deployed    cilium-1.18.1  Upgrade complete   <- dieser Dienst, Sveltos
+ *
+ * Also eine **Rueckdatierung des CNI** auf einem Cluster, der schon lief,
+ * neun Minuten nach seiner Geburt, mit anderem Tunnelprotokoll (geneve statt
+ * vxlan). Dass es gut ging, war Glueck.
+ *
+ * Der Kommentar hier sagte "Cilium, weil der Cluster sonst kein CNI hat".
+ * Das war nicht geprueft, sondern angenommen - die Vorlage installiert es
+ * selbst. Wer hier einen Dienst eintraegt, sieht vorher im Chart nach, ob er
+ * schon von dort kommt.
  *
  * Namen und Werte stehen hier und nicht in der Datenbank, weil sie eine
- * Einheit bilden: die Cilium-Werte verweisen auf den apiHost, und ein anderer
- * Cilium-Stand kann andere Schluessel verlangen. Ein Versionssprung ist
- * deshalb eine Freigabe dieses Dienstes, keine Datenpflege.
+ * Einheit bilden: ein anderer cert-manager-Stand kann andere Schluessel
+ * verlangen. Ein Versionssprung ist deshalb eine Freigabe dieses Dienstes,
+ * keine Datenpflege.
  */
 const HOSTED_SERVICES = {
   certManager: 'cert-manager-v1-19-3',
-  cilium: 'cilium-1-18-1',
 };
 
-function buildHostedServiceSpec(req) {
-  const { apiHost } = ingressHosts(req.name, req.childApiDomain);
+function buildHostedServiceSpec() {
   return {
     services: [
       {
@@ -173,37 +189,6 @@ function buildHostedServiceSpec(req) {
         name: 'cert-manager',
         namespace: 'cert-manager',
         values: 'crds:\n  enabled: true\n',
-      },
-      {
-        template: HOSTED_SERVICES.cilium,
-        name: 'cilium',
-        namespace: 'kube-system',
-        values: [
-          `k8sServiceHost: ${apiHost}`,
-          'k8sServicePort: "443"',
-          'ipam:',
-          '  mode: cluster-pool',
-          '  operator:',
-          '    clusterPoolIPv4PodCIDRList:',
-          `      - "${PODS_CIDR}"`,
-          'tunnelProtocol: geneve',
-          'ipv4:',
-          '  enabled: true',
-          'ipv6:',
-          '  enabled: false',
-          'hubble:',
-          '  relay:',
-          '    enabled: false',
-          '  ui:',
-          '    enabled: false',
-          'envoy:',
-          '  enabled: false',
-          'operator:',
-          '  replicas: 1',
-          '  tolerations:',
-          '    - operator: Exists',
-          '',
-        ].join('\n'),
       },
     ],
   };
@@ -354,7 +339,7 @@ function buildClusterDeployment(req) {
       credential: req.credential,
       ...(req.dryRun ? { dryRun: true } : {}),
       config,
-      ...(shape.build === buildHostedConfig ? { serviceSpec: buildHostedServiceSpec(req) } : {}),
+      ...(shape.build === buildHostedConfig ? { serviceSpec: buildHostedServiceSpec() } : {}),
     },
   };
 }
