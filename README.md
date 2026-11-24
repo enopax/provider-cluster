@@ -189,13 +189,37 @@ curl http://localhost:3003/v1/clusters/my_org-production-production_k8s/metrics
 
 ### Updating Cluster Configuration
 
+Two things can change on a running cluster: the worker count and the k0s
+version. Either on its own, or both in one call — one call means one patch,
+so a half-applied change cannot look like a whole one.
+
 ```bash
-curl -X PUT http://localhost:3003/v1/clusters/my_org-production-production_k8s \
+curl -X PUT http://localhost:3003/v1/clusters/kcm-system%2Fdev-box1 \
   -H "Content-Type: application/json" \
   -d '{
-    "workerNodes": 5
+    "workerNodes": 5,
+    "k0sVersion": "v1.36.3+k0s.0"
   }'
 ```
+
+`k0sVersion` is the **upgrade**. k0rdent has no upgrade verb: setting
+`spec.config.k0s.version` is how it is done, and Cluster API then replaces the
+nodes. The notation is mandatory (`v1.36.3+k0s.0`) because the template builds
+a download URL from it; `1.36.3` yields one that does not exist, and that
+shows up on a node which never joins.
+
+Which versions may be offered is **not decided here** — `console-api` holds
+the catalogue. This service refuses a version it cannot write (wrong notation,
+or a template whose config carries no `k0s.version`) and otherwise reports
+back what the patched object says:
+
+```json
+{ "success": true, "workerNodes": 5, "k8sVersion": "v1.36.3+k0s.0" }
+```
+
+Those two fields come from the object, not from the request. The caller is
+meant to compare them against what it asked for — a `success: true` is not a
+promise that anything arrived. See enopax/enopax#38.
 
 ### Deprovisioning a Cluster
 
@@ -406,8 +430,8 @@ echo '{"id":"myorg-myproj-test"}' | \
 - [ ] Basic health monitoring
 
 ### v0.3.0
-- [ ] Dynamic node scaling (add/remove workers)
-- [ ] Cluster upgrades (K8s version updates)
+- [x] Dynamic node scaling (add/remove workers)
+- [x] Cluster upgrades (K8s version updates) — `spec.config.k0s.version`
 - [ ] Advanced metrics (pod, node, resource usage)
 - [ ] Persistent volume management
 

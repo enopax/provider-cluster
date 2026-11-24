@@ -23,6 +23,8 @@ const {
   readStatus,
   workersOf,
   scalePatch,
+  versionPatch,
+  mergeConfigPatches,
 } = require('./k0rdent');
 const { ensureOrganisationTenant, nameFor } = require('./kof-tenant');
 const kofQuery = require('./kof-query');
@@ -869,18 +871,29 @@ async function kubeconfig(input) {
 }
 
 /**
- * Setzt die Arbeiterzahl eines bestehenden Clusters.
+ * Aendert einen bestehenden Cluster: die Arbeiterzahl, die k0s-Version, oder
+ * beides.
  *
- * Liest das Objekt, bevor es schreibt. Der Pfad der Zahl haengt am Aufbau der
- * Konfiguration - `worker.replicas` im hosted-, `workersNumber` im
+ * Liest das Objekt, bevor es schreibt. Der Pfad der Arbeiterzahl haengt am
+ * Aufbau der Konfiguration - `worker.replicas` im hosted-, `workersNumber` im
  * standalone-Dialekt -, und den kennt man erst, wenn man das Objekt gesehen
  * hat. Ein zusaetzlicher Aufruf gegen eine blinde Schreibung: der blinde
  * Schluessel wird von der API angenommen und von keinem Chart gelesen.
+ *
+ * Das Upgrade braucht hier **kein eigenes Verb**, und das ist keine
+ * Bequemlichkeit, sondern die Art, wie k0rdent es tut: man setzt
+ * `spec.config.k0s.version`, und Cluster API tauscht die Knoten. Siehe
+ * `versionPatch` in `k0rdent.js` und enopax/enopax#32.
+ *
+ * Was die Antwort wert ist, steht in `summarise`: sie traegt `workerNodes`
+ * und `k8sVersion` **aus dem gepatchten Objekt**, nicht aus der Anfrage. Der
+ * Aufrufer kann damit pruefen, ob seine Aenderung angekommen ist, statt einem
+ * `success: true` zu glauben - der Unterschied, der enopax/enopax#38 war.
  */
 async function update(input) {
   if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
-  if (input.workerNodes === undefined) {
-    return { success: false, error: 'Nothing to update: expected workerNodes' };
+  if (input.workerNodes === undefined && input.k0sVersion === undefined) {
+    return { success: false, error: 'Nothing to update: expected workerNodes or k0sVersion' };
   }
 
   const { objects } = client();
@@ -894,7 +907,10 @@ async function update(input) {
 
   try {
     const current = await objects.getNamespacedCustomObject(ref);
-    const body = scalePatch(current, Number(input.workerNodes));
+    const patches = [];
+    if (input.workerNodes !== undefined) patches.push(scalePatch(current, Number(input.workerNodes)));
+    if (input.k0sVersion !== undefined) patches.push(versionPatch(current, String(input.k0sVersion)));
+    const body = mergeConfigPatches(patches);
     const patched = await objects.patchNamespacedCustomObject({ ...ref, body }, MERGE_PATCH);
     return { success: true, ...summarise(patched) };
   } catch (error) {

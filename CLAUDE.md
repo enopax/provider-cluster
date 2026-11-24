@@ -221,6 +221,33 @@ eine falsche. Ohne Label legt der Operator keinen VMUser an; die Telemetrie
 liegt dann im gemeinsamen Mandanten und ist nicht abgegrenzt, aber sie ist
 auch nicht falsch abgegrenzt.
 
+## Ein Upgrade ist ein Feld, kein Verb
+
+`update` nimmt `workerNodes`, `k0sVersion` oder beides. Das Upgrade ist
+`spec.config.k0s.version` - so tut k0rdent es, Cluster API tauscht danach die
+Knoten. Ein eigenes `upgrade` hier waere eine Erfindung ueber einer
+Zuweisung.
+
+Beide Angaben gehen in **einen** Patch (`mergeConfigPatches`). Zwei
+Schreibungen hintereinander koennen zur Haelfte gelingen, und dann traegt der
+Cluster die neue Version und die alte Knotenzahl, ohne dass die Antwort es
+verraet.
+
+Zwei Absagen statt eines stillen Fehlschlags:
+
+- **Die Schreibweise** (`K0S_VERSION`, eine Konstante fuer beide Stellen).
+  Eine Version, die es als Release nicht gibt, ergibt eine Download-URL mit
+  404 - sichtbar erst an einem Knoten, der nie beitritt, und die Maschine
+  laeuft und kostet.
+- **Das Feld muss schon da sein.** Traegt die Konfiguration kein
+  `k0s.version`, ist es eine Vorlage, die wir nicht kennen. Ein Patch auf
+  einen Schluessel, den kein Chart liest, wird von der API angenommen und
+  wirkt nicht - genau #38, eine Etage daneben.
+
+**Welche Versionen angeboten werden, entscheidet dieser Dienst nicht.** Der
+Katalog in `console-api` fuehrt sie, mitsamt der Frage, welcher Sprung erlaubt
+ist. Hier steht nur, was sich schreiben laesst.
+
 ## Was hier nicht entschieden wird
 
 Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
