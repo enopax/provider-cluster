@@ -24,7 +24,8 @@ const {
   workersOf,
   scalePatch,
 } = require('./k0rdent');
-const { ensureOrganisationTenant } = require('./kof-tenant');
+const { ensureOrganisationTenant, nameFor } = require('./kof-tenant');
+const kofQuery = require('./kof-query');
 
 /**
  * Der Content-Type eines Patches - und warum er hier ausdruecklich steht.
@@ -177,6 +178,133 @@ async function provision(input) {
     }
     return { success: false, error: messageOf(error) };
   }
+}
+
+/**
+ * Die Auslastung aus KOF, oder `null`.
+ *
+ * Gibt die Form von `nodeUsage` zurueck, damit der Aufrufer die Quellen
+ * tauschen kann, ohne es zu merken - `memoryPercent` heisst dort so, nicht
+ * `memPercent`.
+ *
+ * Schlaegt irgendetwas fehl, ist das Ergebnis `null` und der Aufrufer nimmt
+ * den metrics-server. Ein Fehler hier darf die Metriken nicht zum Scheitern
+ * bringen: die Knotenliste, die Pods und die Volumes haengen nicht an KOF.
+ */
+async function kofUsage(id, name) {
+  try {
+    const namespace = namespaceOf(id);
+    const { core, objects } = client();
+    const deployment = await objects.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace, plural: PLURAL, name,
+    });
+    const labels = (deployment.metadata && deployment.metadata.labels) || {};
+    const organisationSlug = labels['enopax.io/organisation'];
+    const regional = labels['k0rdent.mirantis.com/kof-regional-cluster-name'];
+    const regionalNamespace =
+      labels['k0rdent.mirantis.com/kof-regional-cluster-namespace'] || namespace;
+    if (!regional || !organisationSlug) return null;
+
+    const endpoint = await kofQuery.readEndpoint(core, regional, regionalNamespace);
+    const regionalKc = new k8s.KubeConfig();
+    regionalKc.loadFromString(await readKubeconfigSecret(core, regional, regionalNamespace));
+    const credential = await kofQuery.readCredential(
+      regionalKc.makeApiClient(k8s.CoreV1Api), regionalNamespace, organisationSlug, nameFor,
+    );
+
+    const measured = await kofQuery.instant({
+      endpoint, credential, cluster: name, now: Date.now(),
+    });
+
+    // Nichts gemessen heisst nicht null - dann ist der metrics-server dran.
+    if (measured.cpuPercent === null && measured.memPercent === null) return null;
+
+    return {
+      nodes: measured.nodes,
+      cpuPercent: measured.cpuPercent,
+      memoryPercent: measured.memPercent,
+      source: 'kof',
+    };
+  } catch (error) {
+    console.log(`[kof] usage for ${id} unavailable, using metrics-server: ${messageOf(error)}`);
+    return null;
+  }
+}
+
+/**
+ * Messwerte ueber Zeit, fuer einen Cluster.
+ *
+ * Gefragt wird mit dem Lesezugang der **Organisation**, nicht mit dem des
+ * Clusters: der des Clusters liegt im Kindcluster und damit beim Kunden
+ * (enopax/enopax#45), und er verschwindet mit dem Cluster. Geklemmt ist
+ * ohnehin beides serverseitig.
+ *
+ * Woher Organisation und Region kommen: aus den Labels am ClusterDeployment.
+ * Mitgeschickt werden darf das nicht - wer die Organisation in der Anfrage
+ * waehlen kann, waehlt den Mandanten.
+ */
+async function series(input) {
+  if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
+
+  const range = input.range || '24h';
+  if (!kofQuery.RANGES[range]) {
+    return {
+      success: false,
+      error: `Unknown range: "${range}". Known: ${Object.keys(kofQuery.RANGES).join(', ')}`,
+    };
+  }
+
+  const namespace = namespaceOf(input.id);
+  const name = nameOf(input.id);
+
+  try {
+    const { core, objects } = client();
+    const deployment = await objects.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace, plural: PLURAL, name,
+    });
+    const labels = (deployment.metadata && deployment.metadata.labels) || {};
+    const organisationSlug = labels['enopax.io/organisation'];
+    const regional = labels['k0rdent.mirantis.com/kof-regional-cluster-name'];
+    const regionalNamespace =
+      labels['k0rdent.mirantis.com/kof-regional-cluster-namespace'] || namespace;
+
+    // Ein Private Cluster hat keine Region und damit kein KOF. Das ist kein
+    // Fehler, sondern eine Eigenschaft der Variante - also sagen, warum.
+    if (!regional || !organisationSlug) {
+      return {
+        success: true,
+        id: input.id,
+        available: false,
+        reason: !regional
+          ? 'This cluster has no regional cluster, so no telemetry is collected for it.'
+          : 'This cluster carries no organisation label, so no tenant can be derived.',
+      };
+    }
+
+    const endpoint = await kofQuery.readEndpoint(core, regional, regionalNamespace);
+
+    const regionalKc = new k8s.KubeConfig();
+    regionalKc.loadFromString(await readKubeconfigSecret(core, regional, regionalNamespace));
+    const credential = await kofQuery.readCredential(
+      regionalKc.makeApiClient(k8s.CoreV1Api), regionalNamespace, organisationSlug, nameFor,
+    );
+
+    const result = await kofQuery.series({
+      endpoint, credential, cluster: name, range, now: Date.now(),
+    });
+
+    return { success: true, id: input.id, available: true, ...result };
+  } catch (error) {
+    return { success: false, error: messageOf(error) };
+  }
+}
+
+/** Das Kubeconfig eines Clusters aus seinem Secret, als Text. */
+async function readKubeconfigSecret(core, name, namespace) {
+  const secret = await core.readNamespacedSecret({ name: `${name}-kubeconfig`, namespace });
+  const raw = secret && secret.data && secret.data.value;
+  if (!raw) throw new Error(`Secret ${namespace}/${name}-kubeconfig has no "value" key`);
+  return Buffer.from(raw, 'base64').toString('utf8');
 }
 
 /**
@@ -374,8 +502,18 @@ async function metrics(input) {
 
     // Namen, nicht nur Zahlen. Die Console zeigt waehrend des Baus, welche
     // Maschine gerade dazukommt; "2 von 3" sagt das nicht.
-    // Die Auslastung, wenn der Kindcluster sie messen kann.
-    const usage = await nodeUsage(childKc, items);
+    //
+    // Die Auslastung kommt aus KOF, wenn es sie hat, und sonst aus dem
+    // metrics-server des Kindes. Beide messen dasselbe, aber nicht gleich:
+    // der metrics-server nennt die ganze Knotenlast, cAdvisor summiert nur
+    // Container. Entschieden wurde fuer KOF, damit Kachel und Diagramm nicht
+    // zwei Zahlen fuer dieselbe Groesse zeigen (enopax/enopax#30).
+    //
+    // Der metrics-server bleibt, und zwar nicht aus Vorsicht: ein Cluster,
+    // der gerade entsteht, hat in KOF noch keine Reihe, und ein Private
+    // Cluster hat gar keine Region. Dort ist er die einzige Quelle.
+    const fallback = await nodeUsage(childKc, items);
+    const usage = (await kofUsage(input.id, name)) || fallback;
     const podState = readPods(pods.items);
     const volumeState = readVolumes(claims.items);
 
@@ -419,6 +557,10 @@ async function metrics(input) {
         // nicht null, und die Console hat dafuer einen Leerzustand.
         cpuUsagePercent: usage.cpuPercent,
         memoryUsagePercent: usage.memoryPercent,
+        // Woher die Auslastung kommt. Wer eine Zahl liest, soll nicht raten
+        // muessen, welche Rechnung dahinter steht - die beiden Quellen
+        // weichen um ein bis vier Punkte ab.
+        usageSource: usage.source || 'metrics-server',
       },
     };
   } catch (error) {
@@ -736,6 +878,7 @@ module.exports = {
   status,
   metrics,
   kubeconfig,
+  series,
   update,
   deprovision,
   list,

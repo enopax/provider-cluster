@@ -36,6 +36,27 @@ function registerRoutes(app, handlers) {
     res.json(result);
   });
 
+  /**
+   * Messwerte ueber Zeit.
+   *
+   * Eine eigene Route und kein Teil von `metrics`: der Momentanwert wird oft
+   * und von einem Waechter abgerufen, eine Linie nur, wenn jemand hinsieht.
+   * Beides in eine Antwort zu legen heisst, dreissig Tage mitzuschleppen,
+   * wann immer eine Kachel aktualisiert wird.
+   */
+  app.get('/v1/clusters/:id/series', async (req, res) => {
+    const result = await handlers.series({ id: req.params.id, range: req.query.range });
+
+    if (!result.success) {
+      // Ein unbekannter Zeitbereich ist ein Fehler des Aufrufers, kein
+      // Ausfall - 400, damit es nicht wie ein Serverproblem aussieht.
+      const badRange = /^Unknown range/.test(result.error || '');
+      return res.status(badRange ? 400 : 500).json(result);
+    }
+
+    res.json(result);
+  });
+
   return app;
 }
 
