@@ -308,6 +308,37 @@ schreibend, und die Zieladressen abgeschrieben aus einem vom Operator
 erzeugten VMUser statt hier hingeschrieben. Siehe enopax/enopax#39.
 
 
+## Das Bild muss `linux/amd64` sein
+
+Der App-Host ist x86_64, der Entwicklungsrechner arm64. `docker build` nimmt
+die eigene Architektur, die Registry nimmt das Bild an, `docker compose pull`
+holt es - und dann:
+
+```
+exec /usr/local/bin/docker-entrypoint.sh: exec format error
+Restarting (255)
+```
+
+Nichts davor warnt. Also:
+
+```bash
+docker buildx build --platform linux/amd64 -t ghcr.io/enopax/provider-cluster:<version> --push .
+```
+
+Nachsehen laesst es sich nur ausdruecklich - `docker manifest inspect` ohne
+`-v` zeigt die Architektur nicht:
+
+```bash
+docker manifest inspect -v ghcr.io/enopax/provider-cluster:<version> | grep -i architecture
+```
+
+Das ist am 2026-11-24 bei `0.3.6` passiert. Gekostet hat es einen Rollback auf
+`0.3.5`; der Dienst war etwa eine Minute im Neustartkreis. Dass es auffiel,
+lag allein daran, dass ich nach dem Ausrollen in `docker compose ps` gesehen
+habe - haette ich nur den Push geprueft, waere der Provider ausgefallen
+geblieben.
+
+
 ## Was der Dry-Run beweist - und was nicht
 
 `dryRun: 'All'` an der Kubernetes-API laesst die Admission-Webhooks das
