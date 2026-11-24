@@ -24,7 +24,8 @@ const {
   workersOf,
   scalePatch,
 } = require('./k0rdent');
-const { ensureOrganisationTenant } = require('./kof-tenant');
+const { ensureOrganisationTenant, nameFor } = require('./kof-tenant');
+const kofQuery = require('./kof-query');
 
 /**
  * Der Content-Type eines Patches - und warum er hier ausdruecklich steht.
@@ -177,6 +178,82 @@ async function provision(input) {
     }
     return { success: false, error: messageOf(error) };
   }
+}
+
+/**
+ * Messwerte ueber Zeit, fuer einen Cluster.
+ *
+ * Gefragt wird mit dem Lesezugang der **Organisation**, nicht mit dem des
+ * Clusters: der des Clusters liegt im Kindcluster und damit beim Kunden
+ * (enopax/enopax#45), und er verschwindet mit dem Cluster. Geklemmt ist
+ * ohnehin beides serverseitig.
+ *
+ * Woher Organisation und Region kommen: aus den Labels am ClusterDeployment.
+ * Mitgeschickt werden darf das nicht - wer die Organisation in der Anfrage
+ * waehlen kann, waehlt den Mandanten.
+ */
+async function series(input) {
+  if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
+
+  const range = input.range || '24h';
+  if (!kofQuery.RANGES[range]) {
+    return {
+      success: false,
+      error: `Unknown range: "${range}". Known: ${Object.keys(kofQuery.RANGES).join(', ')}`,
+    };
+  }
+
+  const namespace = namespaceOf(input.id);
+  const name = nameOf(input.id);
+
+  try {
+    const { core, objects } = client();
+    const deployment = await objects.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace, plural: PLURAL, name,
+    });
+    const labels = (deployment.metadata && deployment.metadata.labels) || {};
+    const organisationSlug = labels['enopax.io/organisation'];
+    const regional = labels['k0rdent.mirantis.com/kof-regional-cluster-name'];
+    const regionalNamespace =
+      labels['k0rdent.mirantis.com/kof-regional-cluster-namespace'] || namespace;
+
+    // Ein Private Cluster hat keine Region und damit kein KOF. Das ist kein
+    // Fehler, sondern eine Eigenschaft der Variante - also sagen, warum.
+    if (!regional || !organisationSlug) {
+      return {
+        success: true,
+        id: input.id,
+        available: false,
+        reason: !regional
+          ? 'This cluster has no regional cluster, so no telemetry is collected for it.'
+          : 'This cluster carries no organisation label, so no tenant can be derived.',
+      };
+    }
+
+    const endpoint = await kofQuery.readEndpoint(core, regional, regionalNamespace);
+
+    const regionalKc = new k8s.KubeConfig();
+    regionalKc.loadFromString(await readKubeconfigSecret(core, regional, regionalNamespace));
+    const credential = await kofQuery.readCredential(
+      regionalKc.makeApiClient(k8s.CoreV1Api), regionalNamespace, organisationSlug, nameFor,
+    );
+
+    const result = await kofQuery.series({
+      endpoint, credential, cluster: name, range, now: Date.now(),
+    });
+
+    return { success: true, id: input.id, available: true, ...result };
+  } catch (error) {
+    return { success: false, error: messageOf(error) };
+  }
+}
+
+/** Das Kubeconfig eines Clusters aus seinem Secret, als Text. */
+async function readKubeconfigSecret(core, name, namespace) {
+  const secret = await core.readNamespacedSecret({ name: `${name}-kubeconfig`, namespace });
+  const raw = secret && secret.data && secret.data.value;
+  if (!raw) throw new Error(`Secret ${namespace}/${name}-kubeconfig has no "value" key`);
+  return Buffer.from(raw, 'base64').toString('utf8');
 }
 
 /**
@@ -736,6 +813,7 @@ module.exports = {
   status,
   metrics,
   kubeconfig,
+  series,
   update,
   deprovision,
   list,

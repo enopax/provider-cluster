@@ -51,6 +51,13 @@ function serve() {
   });
 
   registerRoutes(app, {
+    series: async (input) => {
+      seen.push({ op: 'series', id: input.id, range: input.range });
+      if (input.range && !['1h', '24h', '7d', '30d'].includes(input.range)) {
+        return { success: false, error: `Unknown range: "${input.range}". Known: 1h, 24h, 7d, 30d` };
+      }
+      return { success: true, id: input.id, available: true, range: input.range || '24h', cpuPercent: [] };
+    },
     kubeconfig: async (input) => {
       seen.push({ op: 'kubeconfig', id: input.id });
       if (input.id.endsWith('building')) {
@@ -170,6 +177,55 @@ test('ohne API-Key kommt die kubeconfig nicht heraus', async () => {
     // Die Route erbt authMiddleware ueber app.use - das ist der Grund, warum
     // sie dort und nicht in einem eigenen Server haengt.
     const response = await fetch(`${base}/v1/clusters/${encodeURIComponent(ID)}/kubeconfig`);
+    assert.strictEqual(response.status, 401);
+  } finally {
+    server.close();
+  }
+});
+
+test('die Zeitreihen erreichen ihre Kennung, und der Bereich kommt mit', async () => {
+  const { base, seen, server } = await serve();
+  try {
+    const encoded = encodeURIComponent(ID);
+
+    const ok = await call(base, `/v1/clusters/${encoded}/series?range=7d`);
+    assert.strictEqual(ok.status, 200);
+    assert.strictEqual((await ok.json()).range, '7d');
+
+    // Ohne Angabe gilt die Vorgabe des Handlers, nicht ein Fehler.
+    const plain = await call(base, `/v1/clusters/${encoded}/series`);
+    assert.strictEqual(plain.status, 200);
+    assert.strictEqual((await plain.json()).range, '24h');
+
+    assert.deepStrictEqual(
+      seen.filter((x) => x.op === 'series'),
+      [
+        { op: 'series', id: ID, range: '7d' },
+        { op: 'series', id: ID, range: undefined },
+      ],
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('ein unbekannter Zeitbereich ist 400, kein 500', async () => {
+  const { base, server } = await serve();
+  try {
+    const response = await call(base, `/v1/clusters/${encodeURIComponent(ID)}/series?range=90d`);
+    // Ein Fehler des Aufrufers soll nicht wie ein Serverproblem aussehen -
+    // sonst sucht jemand den Ausfall, den es nicht gibt.
+    assert.strictEqual(response.status, 400);
+    assert.match((await response.json()).error, /Unknown range/);
+  } finally {
+    server.close();
+  }
+});
+
+test('ohne Schluessel gibt es auch keine Zeitreihen', async () => {
+  const { base, server } = await serve();
+  try {
+    const response = await fetch(`${base}/v1/clusters/${encodeURIComponent(ID)}/series`);
     assert.strictEqual(response.status, 401);
   } finally {
     server.close();
