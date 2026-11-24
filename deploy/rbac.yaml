@@ -43,6 +43,14 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get"]
+  # Die ConfigMap `kof-<regional>` nennt die Leseadresse der Telemetrie
+  # (`read_metrics_endpoint`). Sie wird gelesen und nicht gebildet, damit eine
+  # neue Region oder ein KOF-Umbau nicht still an uns vorbeizieht - und genau
+  # deshalb braucht es dieses Recht. Es fehlte, und `/series` antwortete
+  # darauf mit 500: `configmaps "kof-…" is forbidden`.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

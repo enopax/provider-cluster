@@ -74,6 +74,22 @@ function setClient(stub) {
   cached = stub;
 }
 
+/**
+ * Die API des Kindclusters - einschiebbar.
+ *
+ * Ohne diese Naht lief jeder Test an der Stelle vorbei, an der `metrics`
+ * wirklich arbeitet: ein unerreichbarer Kindcluster laesst `listNode()`
+ * scheitern, und alles danach wird nie ausgefuehrt. So kam ein
+ * `name is not defined` bis in Produktion und liess **jeden** Metrikabruf
+ * scheitern - auch bei Clustern ohne Telemetrie.
+ *
+ * `nodeUsage` hat aus demselben Grund schon ein `read`-Argument.
+ */
+function childApis(childKc) {
+  const injected = cached && cached.childApis;
+  return injected ? injected(childKc) : { core: childKc.makeApiClient(k8s.CoreV1Api) };
+}
+
 const namespaceOf = (id) => (id.includes('/') ? id.split('/')[0] : DEFAULT_NAMESPACE);
 const nameOf = (id) => (id.includes('/') ? id.split('/').slice(1).join('/') : id);
 const idOf = (deployment) => `${deployment.metadata.namespace}/${deployment.metadata.name}`;
@@ -481,7 +497,7 @@ async function metrics(input) {
 
   const childKc = new k8s.KubeConfig();
   childKc.loadFromString(found.kubeconfig);
-  const childCore = childKc.makeApiClient(k8s.CoreV1Api);
+  const childCore = childApis(childKc).core;
 
   try {
     const [nodes, pods, claims] = await Promise.all([
@@ -513,7 +529,7 @@ async function metrics(input) {
     // der gerade entsteht, hat in KOF noch keine Reihe, und ein Private
     // Cluster hat gar keine Region. Dort ist er die einzige Quelle.
     const fallback = await nodeUsage(childKc, items);
-    const usage = (await kofUsage(input.id, name)) || fallback;
+    const usage = (await kofUsage(input.id, nameOf(input.id))) || fallback;
     const podState = readPods(pods.items);
     const volumeState = readVolumes(claims.items);
 
