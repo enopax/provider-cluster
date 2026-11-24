@@ -58,6 +58,25 @@ function stub({ configMapForbidden = false } = {}) {
         async listPersistentVolumeClaimForAllNamespaces() {
           return { items: [] };
         },
+        // Die Release-Secrets des Kindes, wie Helm sie anlegt: der Zustand
+        // steht im Label, nicht im Inhalt. `hcloud-csi` steht hier auf
+        // `failed` - genau der Fall aus enopax/enopax#40, bei dem die Pods
+        // liefen und das ClusterDeployment `Ready` meldete.
+        async listSecretForAllNamespaces({ labelSelector } = {}) {
+          assert.strictEqual(labelSelector, 'owner=helm', 'nur Release-Secrets lesen');
+          const secret = (ns, name, version, status) => ({
+            metadata: { namespace: ns, name: `sh.helm.release.v1.${name}.v${version}`, labels: { owner: 'helm', name, version: String(version), status } },
+          });
+          return {
+            items: [
+              secret('kube-system', 'cilium', 1, 'deployed'),
+              secret('kube-system', 'hcloud-csi', 1, 'failed'),
+              // Eine aeltere Revision desselben Release - sie zaehlt nicht.
+              secret('cert-manager', 'cert-manager', 1, 'superseded'),
+              secret('cert-manager', 'cert-manager', 2, 'deployed'),
+            ],
+          };
+        },
       },
     }),
     core: {
@@ -123,4 +142,64 @@ test('ein fehlendes Recht auf ConfigMaps nimmt die Metriken nicht mit', async ()
   } finally {
     setClient(null);
   }
+});
+
+test('die Dienste des Kindes stehen in der Antwort, und was nicht laeuft, faellt auf', async () => {
+  // Der Kern von enopax/enopax#40: die Dienste des Kindes kommen aus zwei
+  // Quellen, und keine davon ist von aussen sichtbar. k0rdent zaehlt am
+  // ClusterDeployment nur die Sveltos-Dienste; die k0s-Extensions der Vorlage
+  // (Cilium, hcloud-ccm, hcloud-csi) laufen im Kind und tauchen dort nicht
+  // auf. `hcloud-ccm` und `hcloud-csi` standen auf `failed`, ihre Pods
+  // liefen, und das ClusterDeployment meldete `Ready: True`.
+  setClient(stub());
+  try {
+    const result = await metrics({ id: 'kcm-system/dev-box1' });
+
+    assert.strictEqual(result.success, true);
+    // Vier Secrets, aber drei Releases - die aeltere Revision zaehlt nicht.
+    assert.strictEqual(result.releaseCount, 3);
+
+    const troubled = result.troubledReleases;
+    assert.strictEqual(troubled.length, 1, 'genau das eine, das nicht steht');
+    assert.deepStrictEqual(troubled[0], {
+      name: 'hcloud-csi',
+      namespace: 'kube-system',
+      revision: 1,
+      status: 'failed',
+    });
+  } finally {
+    setClient(null);
+  }
+});
+
+test('je Release zaehlt die hoechste Revision, und ein fehlender Status ist nicht "in Ordnung"', () => {
+  const { __readReleases } = require('../provider/cluster/handlers');
+  const secret = (name, version, status) => ({
+    metadata: {
+      namespace: 'kube-system',
+      name: `sh.helm.release.v1.${name}.v${version}`,
+      labels: { owner: 'helm', name, version: String(version), ...(status ? { status } : {}) },
+    },
+  });
+
+  const state = __readReleases([
+    secret('cilium', 1, 'superseded'),
+    secret('cilium', 2, 'deployed'),
+    // Rueckwaerts eingelesen - die Reihenfolge der Secrets ist nicht garantiert.
+    secret('hcloud-ccm', 2, 'failed'),
+    secret('hcloud-ccm', 1, 'deployed'),
+    secret('ohne-status', 1, null),
+    // Kein Helm-Secret: gehoert nicht in die Liste.
+    { metadata: { namespace: 'kube-system', name: 'hetzner', labels: {} } },
+  ]);
+
+  assert.strictEqual(state.count, 3);
+  assert.deepStrictEqual(
+    state.troubled.map((r) => `${r.name}=${r.status}`),
+    ['hcloud-ccm=failed', 'ohne-status=unknown'],
+  );
+  // Ein Release ohne Status gilt nicht als stehend - sonst waere "unbekannt"
+  // dasselbe wie "in Ordnung", und genau diese Gleichsetzung hat in diesem
+  // Produkt schon zweimal wehgetan.
+  assert.ok(state.troubled.some((r) => r.status === 'unknown'));
 });
