@@ -177,3 +177,90 @@ test('der Zugang wird beim Namen des Org-VMUsers gelesen', async () => {
   const cred = await kofQuery.readCredential(core, 'kcm-system', 'enopax', (s) => `enopax-kof-org-${s}`);
   assert.deepStrictEqual(cred, { username: 'enopax-kof-org-enopax', password: 'geheim' });
 });
+
+/* ------------------------------------------------------------------ instant */
+
+/** Ein Vektor, wie VictoriaMetrics ihn gibt. */
+const vector = (pairs) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({
+    status: 'success',
+    data: { resultType: 'vector', result: pairs.map(([node, v]) => ({ metric: { node }, value: [1, String(v)] })) },
+  }),
+});
+
+/** Antworten in der Reihenfolge cpuUsed, cpuAlloc, memUsed, memAlloc. */
+const sequence = (...answers) => {
+  let i = 0;
+  return async () => answers[i++];
+};
+
+test('der Clusterwert ist sum/sum, nicht der Mittelwert der Knotenanteile', async () => {
+  const out = await kofQuery.instant({
+    endpoint: 'http://x',
+    credential: { username: 'u', password: 'p' },
+    cluster: 'mixed',
+    now: 0,
+    fetchImpl: sequence(
+      vector([['small', 0.9], ['big', 0.8]]),   // cpuUsed
+      vector([['small', 1], ['big', 8]]),       // cpuAlloc
+      vector([['small', 1], ['big', 1]]),       // memUsed
+      vector([['small', 2], ['big', 16]]),      // memAlloc
+    ),
+  });
+
+  // Je Knoten: 90 % und 10 %.
+  assert.strictEqual(out.nodes.get('small').cpuPercent, 90);
+  assert.strictEqual(out.nodes.get('big').cpuPercent, 10);
+
+  // Der Clusterwert ist (0.9+0.8)/(1+8) = 18.9 % - nicht (90+10)/2 = 50 %.
+  // Ein kleiner ueberlasteter Knoten gegen einen grossen leeren gemittelt
+  // zeigt Ruhe, wo Not ist.
+  assert.strictEqual(out.cpuPercent, 18.9);
+  assert.notStrictEqual(out.cpuPercent, 50);
+});
+
+test('fehlt eine Seite, ist es null und nicht 0', () => {
+  assert.strictEqual(kofQuery.ratio(null, 8), null);
+  assert.strictEqual(kofQuery.ratio(1, null), null);
+  // Ein Nenner von 0 ergaebe Unendlich - auch das ist unbekannt.
+  assert.strictEqual(kofQuery.ratio(1, 0), null);
+  // Gemessene 0 sind eine Aussage und bleiben eine.
+  assert.strictEqual(kofQuery.ratio(0, 8), 0);
+});
+
+test('ohne Reihen ist der Momentanwert null - der Aufrufer nimmt dann den metrics-server', async () => {
+  const out = await kofQuery.instant({
+    endpoint: 'http://x', credential: { username: 'u', password: 'p' }, cluster: 'neu', now: 0,
+    fetchImpl: sequence(vector([]), vector([]), vector([]), vector([])),
+  });
+
+  assert.strictEqual(out.cpuPercent, null);
+  assert.strictEqual(out.memPercent, null);
+  assert.strictEqual(out.nodes.size, 0);
+});
+
+test('Reihen ohne node-Label fallen weg, statt die Rechnung zu verfaelschen', () => {
+  const map = kofQuery.vectorByNode({
+    data: { result: [
+      { metric: { node: 'a' }, value: [1, '5'] },
+      { metric: {}, value: [1, '99'] },
+      { metric: { node: 'b' }, value: [1, 'NaN'] },
+    ] },
+  });
+  assert.deepStrictEqual([...map.entries()], [['a', 5]]);
+});
+
+test('die Momentanabfrage traegt eine Zeitgrenze', async () => {
+  let seenSignal;
+  await kofQuery.instant({
+    endpoint: 'http://x', credential: { username: 'u', password: 'p' }, cluster: 'a', now: 0,
+    timeoutMs: 1234,
+    fetchImpl: async (_url, init) => { seenSignal = init.signal; return vector([]); },
+  });
+  // Der Waechter ruft das je Cluster im Minutentakt; ein haengendes KOF darf
+  // nicht die Auffrischung aller Cluster aufhalten.
+  assert.ok(seenSignal, 'ohne signal gibt es keine Grenze');
+  assert.strictEqual(typeof seenSignal.aborted, 'boolean');
+});

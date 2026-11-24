@@ -167,12 +167,99 @@ function pointsOf(body) {
   });
 }
 
+
+/**
+ * Dieselben Groessen als Momentanwert, je Knoten und fuer den Cluster.
+ *
+ * Gefragt werden Zaehler und Nenner **getrennt und je Knoten**, und gerechnet
+ * wird hier. Das hat einen Grund: der Clusterwert ist `sum(zaehler) /
+ * sum(nenner)` und nicht der Mittelwert der Knotenanteile. Bei gleich grossen
+ * Knoten liegt beides nah beieinander, bei gemischten Groessen nicht - und
+ * eine Kachel, die einen kleinen ueberlasteten Knoten gegen einen grossen
+ * leeren mittelt, zeigt Ruhe, wo Not ist.
+ *
+ * `null`, wenn eine der vier Abfragen nichts liefert. Unbekannt ist nicht
+ * null, und der Aufrufer hat einen Rueckfall.
+ */
+const NODE_PARTS = {
+  cpuUsed: (c) => `sum by (node) (rate(container_cpu_usage_seconds_total{cluster="${c}",container!=""}[5m]))`,
+  cpuAlloc: (c) => `sum by (node) (kube_node_status_allocatable{cluster="${c}",resource="cpu"})`,
+  memUsed: (c) => `sum by (node) (container_memory_working_set_bytes{cluster="${c}",container!=""})`,
+  memAlloc: (c) => `sum by (node) (kube_node_status_allocatable{cluster="${c}",resource="memory"})`,
+};
+
+async function instant({ endpoint, credential, cluster, now, fetchImpl, timeoutMs = 4000 }) {
+  assertSafeName(cluster);
+  const doFetch = fetchImpl || fetch;
+  const auth = Buffer.from(`${credential.username}:${credential.password}`).toString('base64');
+  const at = Math.floor(now / 1000);
+
+  const parts = {};
+  for (const [key, build] of Object.entries(NODE_PARTS)) {
+    const url = new URL(`${endpoint}/api/v1/query`);
+    url.searchParams.set('query', build(cluster));
+    url.searchParams.set('time', String(at));
+
+    // Eine Zeitgrenze, weil der Waechter das je Cluster im Minutentakt ruft:
+    // ein haengendes KOF darf nicht die Auffrischung aller Cluster aufhalten.
+    const response = await doFetch(url.toString(), {
+      headers: { authorization: `Basic ${auth}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!response.ok) throw new Error(`${key}: vmauth answered ${response.status}`);
+    parts[key] = vectorByNode(await response.json());
+  }
+
+  const nodes = new Map();
+  for (const node of new Set([...parts.cpuAlloc.keys(), ...parts.memAlloc.keys()])) {
+    nodes.set(node, {
+      cpuPercent: ratio(parts.cpuUsed.get(node), parts.cpuAlloc.get(node)),
+      memPercent: ratio(parts.memUsed.get(node), parts.memAlloc.get(node)),
+    });
+  }
+
+  return {
+    nodes,
+    cpuPercent: ratio(total(parts.cpuUsed), total(parts.cpuAlloc)),
+    memPercent: ratio(total(parts.memUsed), total(parts.memAlloc)),
+  };
+}
+
+/** Ein Vektor als Karte Knoten → Zahl. Reihen ohne `node` fallen weg. */
+function vectorByNode(body) {
+  const out = new Map();
+  for (const entry of ((body && body.data) || {}).result || []) {
+    const node = (entry.metric || {}).node;
+    const value = Number((entry.value || [])[1]);
+    if (node && Number.isFinite(value)) out.set(node, value);
+  }
+  return out;
+}
+
+const total = (map) => {
+  if (!map || map.size === 0) return null;
+  let sum = 0;
+  for (const value of map.values()) sum += value;
+  return sum;
+};
+
+/** Prozent auf eine Stelle, oder `null` wenn eine Seite fehlt. */
+function ratio(used, allocatable) {
+  if (used === null || used === undefined) return null;
+  if (!allocatable) return null;
+  return Math.round((used / allocatable) * 1000) / 10;
+}
+
 module.exports = {
   series,
+  instant,
   readEndpoint,
   readCredential,
   pointsOf,
   assertSafeName,
   RANGES,
   QUERIES,
+  NODE_PARTS,
+  ratio,
+  vectorByNode,
 };
