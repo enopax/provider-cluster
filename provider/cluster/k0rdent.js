@@ -227,6 +227,17 @@ const PLANNED_DIALECTS = {};
  * @param {string} [req.projectName]
  * @param {boolean} [req.dryRun]       Nur pruefen lassen, nichts bauen
  */
+/**
+ * Die k0s-Schreibweise, an einer Stelle.
+ *
+ * `v1.35.4+k0s.0`: ein `v`, die Kubernetes-Version, und dahinter die Nummer
+ * des k0s-Builds dazu. Die Vorlage baut daraus eine Download-URL
+ * (`.../releases/download/<version>/k0s-<version>-amd64`) - `1.30.4` ergibt
+ * eine, die es nicht gibt, und das faellt erst auf, wenn die Maschine schon
+ * laeuft und bezahlt wird.
+ */
+const K0S_VERSION = /^v\d+\.\d+\.\d+\+k0s\.\d+$/;
+
 function buildClusterDeployment(req) {
   if (!req.dialect) {
     throw new Error('Missing required field: dialect (which configuration language the template speaks)');
@@ -278,7 +289,7 @@ function buildClusterDeployment(req) {
   // Die Vorlage baut aus der k0s-Version eine Download-URL; `1.30.4` ergibt
   // eine, die es nicht gibt, und das faellt erst auf, wenn die Maschine schon
   // laeuft und bezahlt wird.
-  if (req.k0sVersion && !/^v\d+\.\d+\.\d+\+k0s\.\d+$/.test(req.k0sVersion)) {
+  if (req.k0sVersion && !K0S_VERSION.test(req.k0sVersion)) {
     throw new Error(
       `"${req.k0sVersion}" is not a k0s version; expected something like v1.35.4+k0s.0`,
     );
@@ -486,6 +497,60 @@ function scalePatch(deployment, workers) {
   );
 }
 
+/**
+ * Der Patch, der die k0s-Version eines bestehenden Clusters setzt - also das
+ * Kubernetes-Upgrade.
+ *
+ * Bei k0rdent ist ein Upgrade kein eigenes Verb: man setzt
+ * `spec.config.k0s.version`, und Cluster API tauscht daraufhin die Knoten.
+ * Beide Hetzner-Dialekte tragen dieses Feld, der hosted auch im Schema
+ * (`pattern: ^v\\d+\\.\\d+\\.\\d+\\+k0s\\.\\d+$`).
+ *
+ * Zwei Pruefungen, und keine davon ist Formalie:
+ *
+ * **Die Schreibweise.** Siehe `K0S_VERSION` - eine Version, die als Release
+ * nicht existiert, ergibt eine Download-URL, die 404 liefert, und das sieht
+ * man erst an einem Knoten, der nie beitritt.
+ *
+ * **Das Feld muss schon da sein.** Steht in der Konfiguration kein
+ * `k0s.version`, ist es eine Vorlage, die wir nicht kennen. Ein Patch auf
+ * einen Schluessel, den kein Chart liest, wird von der API angenommen und
+ * wirkt nicht - genau der Fehler aus enopax/enopax#38, wo die Arbeiterzahl in
+ * ein Feld geschrieben wurde, das der hosted-Chart nicht liest. Lieber eine
+ * Absage als ein stiller Fehlschlag.
+ */
+function versionPatch(deployment, k0sVersion) {
+  if (!K0S_VERSION.test(k0sVersion)) {
+    throw new Error(
+      `"${k0sVersion}" is not a k0s version; expected something like v1.35.4+k0s.0`,
+    );
+  }
+
+  const config = (deployment && deployment.spec && deployment.spec.config) || {};
+  if (!config.k0s || config.k0s.version === undefined) {
+    throw new Error(
+      'Cannot upgrade this cluster: its config carries no k0s.version ' +
+        `(template "${(deployment && deployment.spec && deployment.spec.template) || 'unknown'}")`,
+    );
+  }
+
+  return { spec: { config: { k0s: { version: k0sVersion } } } };
+}
+
+/**
+ * Fasst mehrere Patches zu einem zusammen, eine Ebene tief unter
+ * `spec.config`.
+ *
+ * Ein Aufruf statt zwei: zwei Schreibungen hintereinander koennen zur Haelfte
+ * gelingen, und dann hat der Cluster die neue Version und die alte
+ * Knotenzahl, ohne dass jemand es anhand der Antwort merkt.
+ */
+function mergeConfigPatches(patches) {
+  const config = {};
+  for (const patch of patches) Object.assign(config, patch.spec.config);
+  return { spec: { config } };
+}
+
 module.exports = {
   GROUP,
   VERSION,
@@ -497,4 +562,7 @@ module.exports = {
   readStatus,
   workersOf,
   scalePatch,
+  versionPatch,
+  mergeConfigPatches,
+  K0S_VERSION,
 };
