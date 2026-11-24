@@ -500,7 +500,7 @@ async function metrics(input) {
   const childCore = childApis(childKc).core;
 
   try {
-    const [nodes, pods, claims] = await Promise.all([
+    const [nodes, pods, claims, releaseSecrets] = await Promise.all([
       childCore.listNode(),
       childCore.listPodForAllNamespaces(),
       // Volumes gehoeren dazu: bei Hetzner stehen dahinter hcloud-Volumes,
@@ -508,6 +508,12 @@ async function metrics(input) {
       childCore
         .listPersistentVolumeClaimForAllNamespaces()
         .catch(() => ({ items: [] })),
+      // Die Helm-Releases des Kindes. Nur die Release-Secrets, und nur, um
+      // ihre Labels zu lesen; faellt der Aufruf aus, fehlt die Liste, und
+      // das ist besser als eine leere zu behaupten.
+      childCore
+        .listSecretForAllNamespaces({ labelSelector: 'owner=helm' })
+        .catch(() => null),
     ]);
 
     const items = nodes.items || [];
@@ -532,6 +538,9 @@ async function metrics(input) {
     const usage = (await kofUsage(input.id, nameOf(input.id))) || fallback;
     const podState = readPods(pods.items);
     const volumeState = readVolumes(claims.items);
+    // `null`, wenn die Secrets nicht gelesen werden konnten - dann sagt die
+    // Antwort nichts ueber Releases, statt "nichts faellt auf" zu behaupten.
+    const releaseState = releaseSecrets ? readReleases(releaseSecrets.items) : null;
 
     const named = items.map((n) => ({
       name: n.metadata.name,
@@ -555,6 +564,10 @@ async function metrics(input) {
       nodes: named,
       // Was nicht laeuft, mit dem Grund, den Kubernetes nennt.
       troubledPods: podState.troubled,
+      // Die Dienste des Kindes, so wie Helm sie dort fuehrt. `undefined`,
+      // wenn nicht gelesen - die Console unterscheidet das von "leer".
+      troubledReleases: releaseState ? releaseState.troubled : undefined,
+      releaseCount: releaseState ? releaseState.count : undefined,
       volumes: volumeState.volumes,
       metrics: {
         totalNodes: items.length,
@@ -648,6 +661,63 @@ function readPods(items) {
  * ein Cluster ohne zustandsbehaftete Last, und die Console zeigt dafuer einen
  * Leerzustand statt 0 TB.
  */
+/**
+ * Die Helm-Releases im Kindcluster, und welche davon nicht stehen.
+ *
+ * Gelesen aus den **Labels** der Release-Secrets (`owner=helm`), nicht aus
+ * ihrem Inhalt: Helm 3 traegt `name`, `version` und `status` dort, und der
+ * Inhalt ist ein gzip-Paket, das die Werte des Release enthaelt - darunter
+ * Zugangsdaten. Was wir nicht brauchen, lesen wir auch nicht.
+ *
+ * Warum ueberhaupt: die Dienste des Kindes kommen aus zwei Quellen, und
+ * **keine davon ist von aussen sichtbar**. Die k0s-Extensions der Vorlage
+ * (Cilium, hcloud-ccm, hcloud-csi) installiert k0s im Kind; die
+ * ServiceTemplates (cert-manager, KOF) bringt Sveltos. Am ClusterDeployment
+ * zaehlt k0rdent nur die zweite Sorte - `ServicesInReadyState: 5/5` sagt
+ * nichts ueber die erste.
+ *
+ * Genau das ist aufgefallen: `hcloud-ccm` und `hcloud-csi` standen auf
+ * `failed` ("context canceled", mitten im Bau abgebrochen), ihre Pods liefen
+ * trotzdem, und das ClusterDeployment meldete `Ready: True`. Niemand in der
+ * Kette konnte es sehen. Siehe enopax/enopax#40.
+ *
+ * Je Release zaehlt die hoechste Revision - die aelteren sind Geschichte.
+ */
+function readReleases(items) {
+  const latest = new Map();
+
+  for (const secret of items || []) {
+    const meta = secret.metadata || {};
+    const labels = meta.labels || {};
+    if (labels.owner !== 'helm' || !labels.name) continue;
+
+    const key = `${meta.namespace}/${labels.name}`;
+    const revision = Number(labels.version || 0);
+    const previous = latest.get(key);
+    if (previous && previous.revision >= revision) continue;
+
+    latest.set(key, {
+      name: labels.name,
+      namespace: meta.namespace,
+      revision,
+      // Was Helm selbst sagt. Fehlt das Label, heisst das "unbekannt" und
+      // nicht "in Ordnung" - ein Release ohne Status ist kein stehendes.
+      status: labels.status || 'unknown',
+    });
+  }
+
+  const releases = [...latest.values()].sort((a, b) =>
+    a.namespace === b.namespace ? a.name.localeCompare(b.name) : a.namespace.localeCompare(b.namespace),
+  );
+
+  return {
+    count: releases.length,
+    releases,
+    // Alles, was nicht `deployed` ist. Leer ist der Normalfall.
+    troubled: releases.filter((r) => r.status !== 'deployed'),
+  };
+}
+
 function readVolumes(items) {
   const parseGi = (value) => {
     const match = /^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti)?$/.exec(String(value || ''));
@@ -903,5 +973,6 @@ module.exports = {
   /** Nur fuer Tests: die Rechnung ohne Cluster. */
   __nodeUsage: nodeUsage,
   __readPods: readPods,
+  __readReleases: readReleases,
   __readVolumes: readVolumes,
 };
