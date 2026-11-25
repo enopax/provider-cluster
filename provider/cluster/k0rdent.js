@@ -181,6 +181,25 @@ const HOSTED_SERVICES = {
   certManager: 'cert-manager-v1-19-3',
 };
 
+/**
+ * Die Dienste, die der PaaS-Cluster mitbekommt - und wie Helm sie ausbringt.
+ *
+ * `helmOptions.atomic: true` steht hier **ausdruecklich**, seit k0rdent 1.13
+ * es nicht mehr von sich aus setzt. Bis 1.12 war es hart verdrahtet; wer
+ * nichts angibt, bekommt ab 1.13 ein nicht-atomares Install.
+ *
+ * Geschrieben, um das Verhalten zu **behalten**, nicht um es zu waehlen: ein
+ * abgebrochener Install laesst sonst eine halb installierte Release stehen,
+ * und bei cert-manager heisst das CRDs ohne Controller. Dass ein
+ * Upstream-Standard sich aendert, darf unser Verhalten nicht lautlos
+ * mitaendern - und wenn wir es aendern wollen, dann als eigene Entscheidung
+ * mit eigenem Beleg. Siehe enopax/enopax#50.
+ *
+ * Die Kehrseite ist bekannt und gewollt: ein Rollback verwischt die Spur des
+ * Fehlschlags. Sichtbar bleibt er trotzdem - eine gescheiterte Release steht
+ * in `troubledReleases` (enopax/enopax#40), und nach einem Rollback steht
+ * dort gar keine, was ebenso auffaellt.
+ */
 function buildHostedServiceSpec() {
   return {
     services: [
@@ -189,6 +208,7 @@ function buildHostedServiceSpec() {
         name: 'cert-manager',
         namespace: 'cert-manager',
         values: 'crds:\n  enabled: true\n',
+        helmOptions: { atomic: true },
       },
     ],
   };

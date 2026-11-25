@@ -248,6 +248,23 @@ Zwei Absagen statt eines stillen Fehlschlags:
 Katalog in `console-api` fuehrt sie, mitsamt der Frage, welcher Sprung erlaubt
 ist. Hier steht nur, was sich schreiben laesst.
 
+## `atomic` steht ausdruecklich da, damit es bleibt
+
+`buildHostedServiceSpec()` setzt `helmOptions.atomic: true`. Bis k0rdent 1.12
+war das hart verdrahtet; ab 1.13 setzt k0rdent es **nicht mehr**, und wer
+nichts angibt, bekommt ein nicht-atomares Install.
+
+Die Zeile waehlt also nichts aus, sie **behaelt** etwas - und genau deshalb
+steht sie da: dass ein Upstream-Standard sich aendert, darf unser Verhalten
+nicht lautlos mitaendern. Ein abgebrochener Install laesst sonst eine halb
+installierte Release stehen, bei cert-manager also CRDs ohne Controller.
+
+Wer es umdrehen will, tut das als eigene Entscheidung mit eigenem Beleg. Die
+Kehrseite ist bekannt: ein Rollback verwischt die Spur des Fehlschlags.
+Unsichtbar wird er dadurch nicht - eine gescheiterte Release steht in
+`troubledReleases`, und nach einem Rollback steht dort gar keine, was ebenso
+auffaellt.
+
 ## Was hier nicht entschieden wird
 
 Vorlage, Credential, Standort und Maschinentypen kommen von `console-api` aus
