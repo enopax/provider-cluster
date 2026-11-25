@@ -1,0 +1,32 @@
+# Die erste CI in diesem Repository.
+#
+# Anlass: enopax/enopax#48 - hier lief nie etwas automatisch, und das hat
+# zweimal gekostet. Einmal stand `package-lock.json` auf einer anderen
+# Fassung als `package.json`, einmal lief ein Image aus einem Stand, den
+# niemand geprueft hatte. Beides faellt hier auf, bevor jemand ein Bild baut.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Die Fassung steht in `.nvmrc`, damit CI und Arbeitsplatz nicht
+      # auseinanderlaufen - eine Zahl an zwei Stellen ist dieselbe Sorte
+      # Fehler, die diese Datei veranlasst hat.
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # `npm ci` und nicht `npm install`: es scheitert, wenn Lockfile und
+      # package.json auseinanderliegen. Genau das war am 2026-11-24 der Fall.
+      - run: npm ci
+
+      - run: npm test
