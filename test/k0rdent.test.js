@@ -133,6 +133,16 @@ test('der PaaS Cluster ist feldgleich mit eu1f-test01', () => {
     spec.serviceSpec.services.every((s) => !/cilium/i.test(JSON.stringify(s))),
     'ein mitgeliefertes Cilium wuerde das des Charts ueberschreiben',
   );
+
+  // `atomic` ausdruecklich, seit k0rdent 1.13 es nicht mehr hart setzt. Bis
+  // 1.12 war es verdrahtet; ohne diese Zeile aenderte ein Upgrade des
+  // Management-Clusters still unser Verhalten - ein abgebrochener Install
+  // liesse dann eine halb installierte Release stehen, bei cert-manager also
+  // CRDs ohne Controller. enopax/enopax#50.
+  assert.deepStrictEqual(
+    spec.serviceSpec.services.map((s) => s.helmOptions),
+    [{ atomic: true }],
+  );
 });
 
 test('AWS nimmt genau einen SSH-Schluessel, nicht stillschweigend mehrere', () => {
