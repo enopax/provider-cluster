@@ -28,6 +28,7 @@ const {
 } = require('./k0rdent');
 const { ensureOrganisationTenant, nameFor } = require('./kof-tenant');
 const kofQuery = require('./kof-query');
+const grafanaAccess = require('./grafana-access');
 
 /**
  * Der Content-Type eines Patches - und warum er hier ausdruecklich steht.
@@ -975,8 +976,77 @@ function messageOf(error) {
   return error.message || String(error);
 }
 
+/**
+ * Den Zugang im Regional herstellen, damit jemand aus der Console in Grafana
+ * springen kann (enopax/enopax#58).
+ *
+ * Vor **jedem** Sprung aufgerufen und nicht einmal beim Anlegen: wer heute im
+ * Projekt ist, aendert sich, und ein Zugang, der einer alten Mitgliedschaft
+ * folgt, ist der Fehler aus enopax/enopax#45. Der Normalfall ist, dass alles
+ * schon steht - dann schreibt dieser Aufruf nichts.
+ *
+ * Laut und nicht still, anders als `ensureTenantQuietly`: dort war der Zugang
+ * eine Nebenwirkung des Clusterbaus, der nicht daran scheitern darf. Hier ist
+ * er der Zweck - ohne ihn fuehrt der Sprung in eine leere Organisation, und
+ * das soll der Aufrufer erfahren, bevor er jemanden hinschickt.
+ */
+async function dashboardAccess(input) {
+  if (!input || !input.id) return { success: false, error: 'Missing required field: id' };
+  for (const field of ['tenantId', 'email', 'grafanaUrl']) {
+    if (!input[field]) return { success: false, error: `Missing required field: ${field}` };
+  }
+
+  const namespace = namespaceOf(input.id);
+  const name = nameOf(input.id);
+
+  try {
+    const { core, objects } = client();
+    const deployment = await objects.getNamespacedCustomObject({
+      group: GROUP, version: VERSION, namespace, plural: PLURAL, name,
+    });
+    const labels = (deployment.metadata && deployment.metadata.labels) || {};
+    const regional = labels['k0rdent.mirantis.com/kof-regional-cluster-name'];
+    const regionalNamespace =
+      labels['k0rdent.mirantis.com/kof-regional-cluster-namespace'] || namespace;
+
+    // Ein Private Cluster hat keinen regionalen Cluster und damit kein
+    // Grafana. Keine Erfindung und kein Fehler - es gibt dort nichts zu
+    // oeffnen, und das gehoert gesagt.
+    if (!regional) {
+      return {
+        success: false,
+        available: false,
+        error: 'This cluster has no regional cluster, so there is no Grafana to open.',
+      };
+    }
+
+    const secret = await core.readNamespacedSecret({
+      name: `${regional}-kubeconfig`,
+      namespace: regionalNamespace,
+    });
+    const raw = secret.data && secret.data.value;
+    if (!raw) throw new Error(`Secret ${regionalNamespace}/${regional}-kubeconfig has no "value" key`);
+    const regionalKc = new k8s.KubeConfig();
+    regionalKc.loadFromString(Buffer.from(raw, 'base64').toString('utf8'));
+
+    const result = await grafanaAccess.ensureDashboardAccess({
+      regionalCore: regionalKc.makeApiClient(k8s.CoreV1Api),
+      regionalObjects: regionalKc.makeApiClient(k8s.CustomObjectsApi),
+      grafanaUrl: input.grafanaUrl,
+      tenantId: input.tenantId,
+      email: input.email,
+      name: input.name,
+    });
+
+    return { success: true, id: input.id, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   provision,
+  dashboardAccess,
   status,
   metrics,
   kubeconfig,
