@@ -459,7 +459,17 @@ const STANDALONE_OBJECT = {
   metadata: { name: 'ep-eu1-fsn1-standalone', namespace: 'kcm-system' },
   spec: {
     template: 'hetzner-standalone-cp-1-1-0',
-    config: { region: 'fsn1', controlPlaneNumber: 1, workersNumber: 2 },
+    // Wie ein wirkliches Objekt aussieht, `worker` eingeschlossen. Ohne es
+    // war der Test blind fuer die Verwechslung in `scalePatch`: ein
+    // standalone-Cluster traegt beides - ein `worker`-Objekt *und*
+    // `workersNumber` -, und nur das zweite liest der Chart.
+    config: {
+      region: 'fsn1',
+      controlPlaneNumber: 1,
+      workersNumber: 2,
+      controlPlane: { type: 'cpx32' },
+      worker: { type: 'cpx32' },
+    },
   },
 };
 
@@ -701,4 +711,236 @@ test('ohne Mandantenkennung kein KOF-Mandantenlabel', () => {
   assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-tenant-id'], undefined);
   // Die Zuordnung zum regionalen Cluster bleibt - die ist etwas anderes.
   assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-cluster-role'], 'child');
+});
+
+// ---------------------------------------------------------------- StackIT ---
+//
+// Dieselbe Haltung wie oben, mit einem Unterschied, der ehrlich benannt
+// gehoert: diese Faelle sind gegen die **Charts** gepruefte Uebersetzungen,
+// nicht gegen einen gelaufenen Cluster. Auf StackIT hat noch nichts gebaut.
+// Was hier steht, sind die Pflichtfelder aus values.schema.json und die
+// `fail`-Zweige von stackit-standalone-cp und stackit-hosted-cp.
+
+/** Wie console-api einen Private Cluster auf StackIT schicken wird. */
+const STACKIT_PRIVATE = {
+  name: 'ep-eu01-standalone',
+  providerId: 'stackit',
+  dialect: 'STACKIT_STANDALONE',
+  template: 'stackit-standalone-cp-0-1-0',
+  credential: 'stackit-eu01',
+  region: 'eu01',
+  controlPlaneNumber: 1,
+  controlPlaneType: 'c1a.4d',
+  workersNumber: 2,
+  workerType: 'c1a.4d',
+  projectId: '11111111-1111-1111-1111-111111111111',
+  credentialsSecretName: 'stackit-eu01-credentials',
+  networkId: '22222222-2222-2222-2222-222222222222',
+  imageId: '33333333-3333-3333-3333-333333333333',
+  k0sVersion: 'v1.35.4+k0s.0',
+};
+
+/** Wie console-api einen PaaS Cluster auf StackIT schicken wird. */
+const STACKIT_PAAS = {
+  ...STACKIT_PRIVATE,
+  name: 'stk-box1',
+  dialect: 'STACKIT_HOSTED',
+  template: 'stackit-hosted-cp-0-1-0',
+  controlPlaneNumber: undefined,
+  controlPlaneType: undefined,
+  workersNumber: 1,
+  childApiDomain: 'eu01.k8s.enopax.io',
+  regionalClusterName: 'ep-eu01-standalone',
+  regionalClusterNamespace: 'kcm-system',
+  organisationSlug: 'tenant-a',
+  tenantId: 'tenant-a_portal',
+};
+
+test('der StackIT-Cluster nennt Projekt, Netz und Abbild - alle drei als UUID', () => {
+  const { spec } = buildClusterDeployment(STACKIT_PRIVATE);
+
+  assert.deepStrictEqual(spec.config, {
+    projectID: '11111111-1111-1111-1111-111111111111',
+    region: 'eu01',
+    credentialsSecretRef: { name: 'stackit-eu01-credentials' },
+    network: { id: '22222222-2222-2222-2222-222222222222' },
+    controlPlaneNumber: 1,
+    workersNumber: 2,
+    controlPlane: {
+      imageID: '33333333-3333-3333-3333-333333333333',
+      machineType: 'c1a.4d',
+    },
+    worker: {
+      imageID: '33333333-3333-3333-3333-333333333333',
+      machineType: 'c1a.4d',
+    },
+    k0s: { version: 'v1.35.4+k0s.0' },
+  });
+  // Kein tokenRef: CAPSTK liest aus credentialsSecretRef. Stuende hier eines,
+  // wuerde der Chart es nicht kennen und still verwerfen.
+  assert.ok(!('tokenRef' in spec.config));
+  // Kein Namensraum am Secret: der Chart setzt dann den der Freigabe, und das
+  // ist derselbe, in dem Credential und ClusterDeployment liegen.
+  assert.ok(!('namespace' in spec.config.credentialsSecretRef));
+  // Der standalone-Cluster bekommt keine Dienste mitgeliefert.
+  assert.ok(!spec.serviceSpec);
+});
+
+test('ohne Schluesselnamen baut StackIT trotzdem - CAPSTK bootstrapt ohne SSH', () => {
+  const { spec } = buildClusterDeployment(STACKIT_PRIVATE);
+
+  assert.ok(!('sshKeyNames' in spec.config));
+  assert.ok(!('sshKeyName' in spec.config.controlPlane));
+});
+
+test('ein Schluesselname geht an die Maschine, nicht an den Cluster', () => {
+  const { spec } = buildClusterDeployment({ ...STACKIT_PRIVATE, sshKeyNames: ['anmn'] });
+
+  assert.strictEqual(spec.config.controlPlane.sshKeyName, 'anmn');
+  assert.strictEqual(spec.config.worker.sshKeyName, 'anmn');
+  assert.ok(!('sshKeyNames' in spec.config));
+});
+
+test('die Zone steht an der Maschine und nur dort', () => {
+  const ohne = buildClusterDeployment(STACKIT_PRIVATE);
+  assert.ok(!('availabilityZone' in ohne.spec.config.worker));
+
+  const mit = buildClusterDeployment({ ...STACKIT_PRIVATE, availabilityZone: 'eu01-1' });
+  assert.strictEqual(mit.spec.config.worker.availabilityZone, 'eu01-1');
+  assert.strictEqual(mit.spec.config.controlPlane.availabilityZone, 'eu01-1');
+});
+
+test('ohne Projekt-UUID wird nichts gebaut, und die Meldung sagt welche fehlt', () => {
+  for (const feld of ['projectId', 'credentialsSecretName', 'imageId']) {
+    const req = { ...STACKIT_PRIVATE, [feld]: undefined };
+    assert.throws(() => buildClusterDeployment(req), new RegExp(feld));
+  }
+});
+
+test('ohne Netz-UUID wird nichts gebaut: der CCM haette kein Netz fuer Load Balancer', () => {
+  assert.throws(
+    () => buildClusterDeployment({ ...STACKIT_PRIVATE, networkId: undefined }),
+    /networkId/,
+  );
+  assert.throws(
+    () => buildClusterDeployment({ ...STACKIT_PRIVATE, networkId: undefined }),
+    /load balancer/,
+  );
+});
+
+test('der StackIT-PaaS-Cluster traegt Clustername, Ingress und einen Arbeiterpool', () => {
+  const { spec } = buildClusterDeployment(STACKIT_PAAS);
+
+  assert.deepStrictEqual(spec.config, {
+    clusterName: 'stk-box1',
+    projectID: '11111111-1111-1111-1111-111111111111',
+    region: 'eu01',
+    credentialsSecretRef: { name: 'stackit-eu01-credentials' },
+    network: { id: '22222222-2222-2222-2222-222222222222' },
+    clusterNetwork: {
+      pods: { cidrBlock: '10.244.0.0/16' },
+      services: { cidrBlock: '10.96.0.0/12' },
+    },
+    controlPlaneNumber: 1,
+    core: {
+      imageID: '33333333-3333-3333-3333-333333333333',
+      machineType: 'c1a.4d',
+      replicas: 1,
+    },
+    worker: {
+      imageID: '33333333-3333-3333-3333-333333333333',
+      machineType: 'c1a.4d',
+      replicas: 1,
+    },
+    ingress: {
+      enabled: true,
+      apiHost: 'api.stk-box1.eu01.k8s.enopax.io',
+      konnectivityHost: 'k.stk-box1.eu01.k8s.enopax.io',
+    },
+    k0s: { version: 'v1.35.4+k0s.0' },
+  });
+});
+
+test('der StackIT-PaaS-Cluster bekommt cert-manager mitgeliefert, der standalone nicht', () => {
+  const paas = buildClusterDeployment(STACKIT_PAAS);
+  assert.deepStrictEqual(paas.spec.serviceSpec.services[0].template, 'cert-manager-v1-19-3');
+
+  const privat = buildClusterDeployment(STACKIT_PRIVATE);
+  assert.ok(!privat.spec.serviceSpec);
+});
+
+test('der StackIT-PaaS-Cluster traegt die KOF-Labels seines Regionalen', () => {
+  const { metadata } = buildClusterDeployment(STACKIT_PAAS);
+
+  assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-cluster-role'], 'child');
+  assert.strictEqual(
+    metadata.labels['k0rdent.mirantis.com/kof-regional-cluster-name'],
+    'ep-eu01-standalone',
+  );
+  assert.strictEqual(metadata.labels['k0rdent.mirantis.com/kof-tenant-id'], 'tenant-a_portal');
+});
+
+test('ohne Ingress-Namen entsteht kein StackIT-PaaS-Cluster', () => {
+  assert.throws(
+    () => buildClusterDeployment({ ...STACKIT_PAAS, childApiDomain: undefined }),
+    /childApiDomain/,
+  );
+});
+
+/** Ein StackIT-standalone-Objekt, wie es im Cluster stehen wird. */
+const STACKIT_STANDALONE_OBJECT = {
+  metadata: { name: 'ep-eu01-standalone', namespace: 'kcm-system' },
+  spec: {
+    template: 'stackit-standalone-cp-0-1-0',
+    config: {
+      projectID: '11111111-1111-1111-1111-111111111111',
+      region: 'eu01',
+      controlPlaneNumber: 1,
+      workersNumber: 2,
+      controlPlane: { imageID: '3'.repeat(8), machineType: 'c1a.4d' },
+      worker: { imageID: '3'.repeat(8), machineType: 'c1a.4d' },
+    },
+  },
+};
+
+test('ein StackIT-Private-Cluster wird an workersNumber skaliert, nicht an worker.replicas', async () => {
+  const { setClient, update } = require('../provider/cluster/handlers');
+  const { calls, client } = recordingClient(STACKIT_STANDALONE_OBJECT);
+  setClient(client);
+
+  const result = await update({ id: 'kcm-system/ep-eu01-standalone', workerNodes: 4 });
+
+  assert.strictEqual(result.success, true);
+  // `worker` ist hier ein Objekt mit Abbild und Maschinentyp - und trotzdem
+  // zaehlt `workersNumber`. Wer nur auf das Vorhandensein von `worker` prueft,
+  // schreibt einen Schluessel, den kein Chart liest.
+  assert.deepStrictEqual(calls[0].args.body, {
+    spec: { config: { workersNumber: 4 } },
+  });
+
+  setClient(null);
+});
+
+test('ein StackIT-PaaS-Cluster wird an worker.replicas skaliert', async () => {
+  const { setClient, update } = require('../provider/cluster/handlers');
+  const { calls, client } = recordingClient({
+    metadata: { name: 'stk-box1', namespace: 'kcm-system' },
+    spec: {
+      template: 'stackit-hosted-cp-0-1-0',
+      config: {
+        clusterName: 'stk-box1',
+        region: 'eu01',
+        worker: { imageID: '3'.repeat(8), machineType: 'c1a.4d', replicas: 1 },
+      },
+    },
+  });
+  setClient(client);
+
+  await update({ id: 'kcm-system/stk-box1', workerNodes: 3 });
+
+  assert.deepStrictEqual(calls[0].args.body, {
+    spec: { config: { worker: { replicas: 3 } } },
+  });
+
+  setClient(null);
 });

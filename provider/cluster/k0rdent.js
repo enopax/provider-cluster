@@ -9,7 +9,8 @@
  * Was hier *nicht* entschieden wird: welche Vorlage, welches Credential,
  * welcher Standort, welche Maschinentypen. Das weiss console-api aus seinen
  * Tabellen provider_regions und provider_sizes und schickt es mit. Diese Datei
- * weiss nur, wie ein Hetzner- und wie ein AWS-ClusterDeployment aussieht.
+ * weiss nur, wie ein Hetzner-, ein StackIT- und ein AWS-ClusterDeployment
+ * aussieht.
  */
 
 const GROUP = 'k0rdent.mirantis.com';
@@ -33,8 +34,14 @@ const SERVICES_CIDR = '10.96.0.0/12';
  * gehoeren zwei gueltige Familien, und sie sind sich in fast keinem Feld
  * einig:
  *
- *   hetzner-standalone-cp   sshKeyNames[]  worker.type   workersNumber
+ *   hetzner-standalone-cp   sshKeyNames[]  worker.type        workersNumber
  *   hetzner-hosted-cp       sshKeyName     worker.serverType  worker.replicas
+ *   stackit-standalone-cp   -              worker.machineType workersNumber
+ *   stackit-hosted-cp       -              worker.machineType worker.replicas
+ *
+ * StackIT hat gar keinen Schluesselnamen in der Vorlage: CAPSTK bootstrapt
+ * ohne SSH. Dafuer stehen dort Felder, die Hetzner nicht kennt - projectID,
+ * network.id und imageID, und alle drei sind UUIDs statt sprechender Namen.
  *
  * Die Vorgaengerfassung hielt die Sprache am Anbieternamen fest und konnte
  * damit nur eine der beiden bauen. Welchen Dialekt eine Vorlage spricht,
@@ -81,7 +88,47 @@ const DIALECTS = {
     // auf dem regionalen Cluster und wird von aussen ueber dessen Ingress
     // bedient.
     ingressRequired: true,
+    hostedServices: true,
     build: buildHostedConfig,
+  },
+
+  /**
+   * StackIT, eigene Steuerungsebene. Zugleich die Vorlage, mit der ein
+   * regionaler Cluster auf StackIT entsteht.
+   *
+   * Kein `tokenRef` und kein Schluesselname: CAPSTK liest seine Zugangsdaten
+   * aus `credentialsSecretRef` - einem gewoehnlichen Secret mit `project-id`
+   * und `serviceaccount.json` - und bootstrapt ohne SSH.
+   *
+   * Drei Felder sind UUIDs, und das ist der eigentliche Unterschied zu
+   * Hetzner: `projectID`, `network.id` und `imageID`. Keines davon hat einen
+   * sprechenden Namen, keines ist zu erraten, und `imageID` wechselt, wenn
+   * StackIT ein Abbild ersetzt. Sie stehen deshalb in provider_regions und
+   * kommen von console-api mit.
+   */
+  STACKIT_STANDALONE: {
+    sshKeysRequired: false,
+    tokenRefRequired: false,
+    stackitFieldsRequired: true,
+    build: buildStackitStandaloneConfig,
+  },
+
+  /**
+   * StackIT, Steuerungsebene auf dem regionalen Cluster.
+   *
+   * Dieselbe Form wie HETZNER_HOSTED - Ingress-Namen sind Pflicht, der
+   * Dienst cert-manager kommt mit -, aber ohne das zweite Secret: der
+   * hosted-Chart von StackIT nimmt dasselbe `credentialsSecretRef` wie der
+   * standalone. Bei Hetzner sind es zwei Secrets mit zwei Schluesseln fuer
+   * einen Anbieter; hier eines.
+   */
+  STACKIT_HOSTED: {
+    sshKeysRequired: false,
+    tokenRefRequired: false,
+    stackitFieldsRequired: true,
+    ingressRequired: true,
+    hostedServices: true,
+    build: buildStackitHostedConfig,
   },
 
   AWS_STANDALONE: {
@@ -142,6 +189,81 @@ function buildHostedConfig(req) {
     // ihn mit - bis dahin ist die Knotenzahl genau `workersNumber`.
     core: machine(req.workerType, 1),
     worker: machine(req.workerType, req.workersNumber),
+    ingress: { enabled: true, apiHost, konnectivityHost },
+  };
+}
+
+/**
+ * Der Konfigurationsteil eines StackIT-Clusters mit eigener Steuerungsebene.
+ *
+ * Eigene Funktion und nicht der geteilte standalone-Aufbau: dort unterscheiden
+ * sich die Dialekte in einem Feldnamen, hier im ganzen Satz. `type` heisst
+ * `machineType`, dazu kommen Abbild, Netz, Projekt und Zone - und `tokenRef`
+ * entfaellt.
+ *
+ * `credentialsSecretRef` bekommt absichtlich keinen Namensraum: der Chart
+ * setzt dann den der Freigabe, und das ist derselbe, in dem auch das
+ * ClusterDeployment und das Secret des Credentials liegen (kcm-system).
+ * Ein ausgeschriebener Namensraum waere eine zweite Wahrheit darueber.
+ */
+function buildStackitStandaloneConfig(req) {
+  const machine = (type) => ({
+    imageID: req.imageId,
+    machineType: type,
+    // Leer heisst: StackIT waehlt die Zone. Das ist keine Nachlaessigkeit,
+    // sondern die einzige Stelle, an der die Zone steht - an der
+    // MachineDeployment steht sie nicht (siehe Chart).
+    ...(req.availabilityZone ? { availabilityZone: req.availabilityZone } : {}),
+    ...(req.sshKeyNames && req.sshKeyNames.length ? { sshKeyName: req.sshKeyNames[0] } : {}),
+  });
+
+  return {
+    projectID: req.projectId,
+    region: req.region,
+    credentialsSecretRef: { name: req.credentialsSecretName },
+    network: { id: req.networkId },
+    controlPlaneNumber: req.controlPlaneNumber,
+    workersNumber: req.workersNumber,
+    controlPlane: machine(req.controlPlaneType),
+    worker: machine(req.workerType),
+  };
+}
+
+/**
+ * Der Konfigurationsteil eines StackIT-PaaS-Clusters.
+ *
+ * Wie der Hetzner-Fall: kein `controlPlaneNumber` fuer Maschinen (die
+ * Steuerungsebene ist keine), `worker.replicas` statt `workersNumber`,
+ * `cidrBlock` im Singular.
+ */
+function buildStackitHostedConfig(req) {
+  const { apiHost, konnectivityHost } = ingressHosts(req.name, req.childApiDomain);
+  const machine = (replicas) => ({
+    imageID: req.imageId,
+    machineType: req.workerType,
+    ...(req.availabilityZone ? { availabilityZone: req.availabilityZone } : {}),
+    replicas,
+  });
+
+  return {
+    clusterName: req.name,
+    projectID: req.projectId,
+    region: req.region,
+    credentialsSecretRef: { name: req.credentialsSecretName },
+    network: { id: req.networkId },
+    clusterNetwork: {
+      pods: { cidrBlock: PODS_CIDR },
+      services: { cidrBlock: SERVICES_CIDR },
+    },
+    // Die Steuerungsebene als Pods: eine Fassung, nicht drei. Mehr waere eine
+    // Entscheidung ueber Verfuegbarkeit, die der Katalog treffen muss.
+    controlPlaneNumber: 1,
+    // `core` ist der statische Pool und entsteht nur mit Autoskalierung -
+    // genau wie bei Hetzner, wo dieselbe Bedingung einmal zu einer falschen
+    // Knotenzahl gefuehrt hat (enopax/enopax#35). Ohne Autoskalierung ist die
+    // Knotenzahl genau `worker.replicas`.
+    core: machine(1),
+    worker: machine(req.workersNumber),
     ingress: { enabled: true, apiHost, konnectivityHost },
   };
 }
@@ -230,8 +352,8 @@ const PLANNED_DIALECTS = {};
  *
  * @param {object} req
  * @param {string} req.name            Clustername, zugleich der Name des Objekts
- * @param {string} req.providerId      hetzner | aws, nur fuer Meldungen
- * @param {string} req.dialect         HETZNER_STANDALONE | AWS_STANDALONE
+ * @param {string} req.providerId      hetzner | stackit | aws, nur fuer Meldungen
+ * @param {string} req.dialect         HETZNER_STANDALONE | STACKIT_STANDALONE | ...
  * @param {string} req.template        k0rdent-ClusterTemplate
  * @param {string} req.credential      k0rdent-Credential
  * @param {string} req.region          Standort beim Anbieter: fsn1, eu-central-1
@@ -241,6 +363,11 @@ const PLANNED_DIALECTS = {};
  * @param {string} req.workerType
  * @param {string} [req.k0sVersion]   k0s-Schreibweise: v1.35.4+k0s.0
  * @param {string} [req.tokenSecretName]
+ * @param {string} [req.credentialsSecretName]  StackIT: Secret mit project-id und serviceaccount.json
+ * @param {string} [req.projectId]              StackIT: Projekt-UUID
+ * @param {string} [req.networkId]              StackIT: Netz-UUID
+ * @param {string} [req.imageId]                StackIT: Abbild-UUID
+ * @param {string} [req.availabilityZone]       StackIT: eu01-1, leer = StackIT waehlt
  * @param {string} [req.tokenSecretKey]
  * @param {string[]} [req.sshKeyNames]
  * @param {string} [req.organisationName]
@@ -304,6 +431,28 @@ function buildClusterDeployment(req) {
         '"HCloudTokenAvailable: invalid or not specified hcloud token in Hetzner secret". ' +
         'See provider_regions.tokenSecretName.',
     );
+  }
+
+  if (shape.stackitFieldsRequired) {
+    // Alle vier fehlen leise: die Kubernetes-API nimmt ein ClusterDeployment
+    // ohne Abbild-ID an, Helm installiert, und erst CAPSTK sagt spaeter, dass
+    // `imageID` kein UUID-Muster ist - da laufen die Maschinen schon. Der
+    // Chart scheitert deshalb beim Rendern, und dieser Dienst hier davor.
+    const missing = [
+      !req.projectId && 'projectId',
+      !req.credentialsSecretName && 'credentialsSecretName',
+      !req.networkId && 'networkId',
+      !req.imageId && 'imageId',
+    ].filter(Boolean);
+    if (missing.length) {
+      throw new Error(
+        `Dialect "${req.dialect}" requires ${missing.join(', ')}. StackIT names its ` +
+          'project, network and image by UUID, not by a readable name — they belong to the ' +
+          'region behind the credential, see provider_regions. networkId is ours on purpose: ' +
+          "CAPSTK's own managed network sets no internetAccess, and the cloud controller " +
+          'manager needs the ID to put load balancers in.',
+      );
+    }
   }
 
   // Die Vorlage baut aus der k0s-Version eine Download-URL; `1.30.4` ergibt
@@ -370,7 +519,7 @@ function buildClusterDeployment(req) {
       credential: req.credential,
       ...(req.dryRun ? { dryRun: true } : {}),
       config,
-      ...(shape.build === buildHostedConfig ? { serviceSpec: buildHostedServiceSpec() } : {}),
+      ...(shape.hostedServices ? { serviceSpec: buildHostedServiceSpec() } : {}),
     },
   };
 }
@@ -508,7 +657,19 @@ function workersOf(config) {
 function scalePatch(deployment, workers) {
   const config = (deployment && deployment.spec && deployment.spec.config) || {};
 
-  if (config.worker) return { spec: { config: { worker: { replicas: workers } } } };
+  // `config.worker` allein entscheidet **nicht**: beide standalone-Dialekte
+  // tragen ein `worker`-Objekt - bei Hetzner `{ type }`, bei StackIT
+  // `{ imageID, machineType }` -, fuehren die Zahl aber als `workersNumber`.
+  // Die Vorgaengerfassung pruefte nur auf `config.worker` und schrieb damit
+  // in jeden Private Cluster `worker.replicas`: ein Schluessel, den die API
+  // annimmt und der standalone-Chart nicht liest. Skalieren blieb wirkungslos,
+  // und zwar mit `success: true` - genau das Muster aus enopax/enopax#38.
+  //
+  // Der Test dazu hat es nicht gesehen, weil seine Vorlage eines echten
+  // Objekts `worker` wegliess. Sie tut es nicht mehr.
+  if (config.worker && config.worker.replicas !== undefined) {
+    return { spec: { config: { worker: { replicas: workers } } } };
+  }
   if (config.workersNumber !== undefined) return { spec: { config: { workersNumber: workers } } };
 
   throw new Error(

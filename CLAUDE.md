@@ -44,6 +44,7 @@ und nichts davon trifft noch zu.
 
 ```
 console-api ──▶ dieser Dienst ──▶ ClusterDeployment ──▶ k0rdent ──▶ Hetzner
+                                                                  └──▶ StackIT (ungebaut)
 ```
 
 ### Aufbau
@@ -89,9 +90,22 @@ Anbieter. Zu Hetzner gehoeren zwei gueltige Familien, und sie sind sich in
 fast keinem Feld einig:
 
 ```
-HETZNER_STANDALONE   sshKeyNames[]  worker.type        workersNumber  tokenRef
-HETZNER_HOSTED       sshKeyName     worker.serverType  worker.replicas
+HETZNER_STANDALONE   sshKeyNames[]  worker.type         workersNumber   tokenRef
+HETZNER_HOSTED       sshKeyName     worker.serverType   worker.replicas
+STACKIT_STANDALONE   -              worker.machineType  workersNumber   credentialsSecretRef
+STACKIT_HOSTED       -              worker.machineType  worker.replicas credentialsSecretRef
 ```
+
+StackIT hat gar keinen Schluesselnamen: CAPSTK bootstrapt ohne SSH, ein
+`sshKeyName` an der Maschine ist zulaessig und nicht noetig. Dafuer stehen dort
+drei Felder, die Hetzner nicht kennt - `projectID`, `network.id` und `imageID`,
+und alle drei sind **UUIDs** statt sprechender Namen. Sie gehoeren zur Region
+hinter dem Credential und stehen in `provider_regions`.
+
+`network.id` ist bei uns Pflicht, obwohl CAPSTK es optional fuehrt: dessen
+eigenes verwaltetes Netz setzt kein `internetAccess` - ohne SNAT laedt k0s sein
+Binary nicht -, und der CCM braucht die Netz-ID zum Rendern, die ein solches
+Netz da noch nicht hat.
 
 Die Vorgaengerfassung hielt die Felder am Anbieternamen fest und konnte damit
 nur eine der beiden bauen. Welchen Dialekt eine Vorlage spricht, weiss

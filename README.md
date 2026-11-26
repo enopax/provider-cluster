@@ -21,7 +21,7 @@ API with its CRDs, and this service is the façade in front of it.
 **What it does not decide**: which template, which credential, which location,
 which machine types. `console-api` resolves those from its `provider_regions`
 and `provider_sizes` tables and sends them along. This service only knows what
-a Hetzner and an AWS `ClusterDeployment` look like — they differ in the key
+a Hetzner, a StackIT and an AWS `ClusterDeployment` look like — they differ in the key
 for the machine type (`type` vs `instanceType`) and the SSH key field, and
 nowhere else.
 
