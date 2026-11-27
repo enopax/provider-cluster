@@ -303,6 +303,119 @@ async function gf(ctx, method, path, body) {
   return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
+/**
+ * Welche Dashboards ein Mandant bekommt - und warum nicht alle.
+ *
+ * Grafana teilt Dashboards **nicht** ueber Organisationen. Eine
+ * Mandanten-Organisation entsteht leer, und `Main Org.` ist fuer einen Kunden
+ * gesperrt, weil dort die ungeklemmten Datenquellen stehen. Also kopieren.
+ *
+ * Kopiert wird nach **Ordner**, nicht nach Liste von Kennungen: `Cluster
+ * Monitoring` ist der einzige Ordner, der von *einem Cluster* handelt statt
+ * von unserer Plattform. Legt KOF dort eine Seite dazu, ist sie damit
+ * automatisch dabei - eine Liste von uids waere beim naechsten Upgrade still
+ * veraltet.
+ *
+ * Die 42 anderen bleiben, wo sie sind (am 2026-11-27 durchgesehen): Kcm, Ksm,
+ * Istio, Victoria*, Ceph, Nvidia, Opencost und 28 Seiten
+ * Kube-Prometheus-Stack-Innenleben. Ihre Felder blieben beim Kunden ohnehin
+ * leer - die Klemme filtert die Reihen weg -, und ihre **Titel** allein
+ * verraten, woraus der Stapel gebaut ist.
+ *
+ * Dass eine Kopie funktioniert, haengt an einer Eigenschaft der Vorlagen:
+ * sie waehlen ihre Datenquelle ueber eine Variable (`${datasource}`, Typ
+ * `datasource`) und nicht ueber eine feste uid. Die Kopie bindet sich deshalb
+ * an die Datenquelle des Mandanten - die geklemmte -, ohne dass hier etwas
+ * umgeschrieben werden muss. Waere es eine uid, zeigte jede Kopie auf die
+ * ungeklemmte Quelle in `Main Org.`, und das waere ein Leck.
+ */
+const TENANT_FOLDERS = (process.env.KOF_TENANT_DASHBOARD_FOLDERS || 'Cluster Monitoring')
+  .split(',')
+  .map((x) => x.trim())
+  .filter(Boolean);
+
+/** Einzelne Seiten aus fremden Ordnern. `Kubernetes Events` traegt zwei, und
+ *  nur eine davon handelt vom Cluster des Kunden - die andere zeigt
+ *  k0rdent-ClusterDeployments. */
+const TENANT_DASHBOARD_UIDS = (process.env.KOF_TENANT_DASHBOARD_UIDS || 'kubernetes-event-exporter')
+  .split(',')
+  .map((x) => x.trim())
+  .filter(Boolean);
+
+/**
+ * Die Vorlagen, gelesen in `Main Org.` - dort provisioniert der
+ * grafana-operator.
+ */
+async function readTenantDashboards(ctx) {
+  const found = await gf(ctx, 'GET', '/api/search?type=dash-db&limit=500');
+  const wanted = (found.body || []).filter(
+    (d) => TENANT_FOLDERS.includes(d.folderTitle) || TENANT_DASHBOARD_UIDS.includes(d.uid),
+  );
+  const out = [];
+  for (const entry of wanted) {
+    const full = await gf(ctx, 'GET', `/api/dashboards/uid/${encodeURIComponent(entry.uid)}`);
+    if (!full.body) continue;
+    out.push({
+      uid: entry.uid,
+      title: entry.title,
+      folderTitle: entry.folderTitle || null,
+      folderUid: entry.folderUid || null,
+      dashboard: full.body.dashboard,
+    });
+  }
+  return out;
+}
+
+/**
+ * Legt die Kopien in der Organisation des Mandanten an - **einmal**.
+ *
+ * Vorhandene werden nicht ueberschrieben: ein Sprung soll billig sein, und
+ * sieben Seiten bei jedem Klick neu zu schreiben waere es nicht. Der Preis ist
+ * bekannt: eine Aenderung an der Vorlage erreicht bestehende Kopien nicht.
+ * Wer sie nachziehen will, loescht sie in der Mandanten-Organisation; der
+ * naechste Sprung legt sie neu.
+ *
+ * `id: null` ist Pflicht - eine Dashboard-Id gilt je Organisation, und die der
+ * Vorlage zeigt in der neuen auf etwas anderes oder nichts. Die `uid` bleibt,
+ * damit "schon da" ueberhaupt feststellbar ist.
+ */
+async function ensureDashboards(ctx, sources) {
+  const touched = [];
+  const folders = new Map();
+  for (const src of sources) {
+    const exists = await gf(ctx, 'GET', `/api/dashboards/uid/${encodeURIComponent(src.uid)}`);
+    if (exists.body) continue;
+
+    let folderUid = null;
+    if (src.folderTitle) {
+      if (!folders.has(src.folderTitle)) {
+        // Denselben Ordner-uid wiederverwenden, damit die Ablage in jeder
+        // Organisation gleich aussieht. Gibt es ihn schon, antwortet Grafana
+        // mit 412/409 - dann steht er, und das ist das Ziel.
+        try {
+          const made = await gf(ctx, 'POST', '/api/folders', {
+            uid: src.folderUid,
+            title: src.folderTitle,
+          });
+          folders.set(src.folderTitle, (made.body && made.body.uid) || src.folderUid);
+        } catch {
+          folders.set(src.folderTitle, src.folderUid);
+        }
+      }
+      folderUid = folders.get(src.folderTitle);
+    }
+
+    await gf(ctx, 'POST', '/api/dashboards/db', {
+      dashboard: { ...src.dashboard, id: null, version: 0 },
+      folderUid,
+      overwrite: false,
+      message: 'Kopie fuer den Mandanten (enopax/enopax#58)',
+    });
+    touched.push({ uid: src.uid, title: src.title, action: 'copied' });
+  }
+  return touched;
+}
+
 /** Die Organisation des Mandanten - sie heisst wie die Kennung. */
 async function ensureOrg(ctx, tenantId) {
   const found = await gf(ctx, 'GET', `/api/orgs/name/${encodeURIComponent(tenantId)}`);
@@ -457,6 +570,13 @@ async function ensureDashboardAccess({
   const admin = await readGrafanaAdmin(regionalCore, grafanaNamespace);
   const ctx = { baseUrl, admin, fetchImpl, timeoutMs };
 
+  // Die Vorlagen **vor** dem Wechsel lesen, und ausdruecklich in `Main Org.`:
+  // dort provisioniert der grafana-operator, und wo der Admin gerade steht,
+  // ist nicht zugesagt - `/api/user/using/` schreibt es an den Nutzer, nicht
+  // an die Sitzung.
+  await gf(ctx, 'POST', `/api/user/using/${MAIN_ORG_ID}`);
+  const sources = await readTenantDashboards(ctx);
+
   const org = await ensureOrg(ctx, tenantId);
   // Der Admin muss in die Organisation wechseln: `/api/datasources` arbeitet
   // immer in der **aktuellen** Organisation des Aufrufers. Ohne diesen
@@ -464,9 +584,14 @@ async function ensureDashboardAccess({
   // dort, wo sie nicht hingehoeren.
   await gf(ctx, 'POST', `/api/user/using/${org.orgId}`);
   let datasources;
+  let dashboards;
   let member;
   try {
     datasources = await ensureDatasources(ctx, credential);
+    // Erst die Datenquellen, dann die Dashboards: eine Seite ohne Datenquelle
+    // ist eine Seite mit Fehlermeldungen, und die Variable bindet beim
+    // Oeffnen, nicht beim Anlegen.
+    dashboards = await ensureDashboards(ctx, sources);
     member = await ensureMember(ctx, org.orgId, { email, name });
   } finally {
     // Zurueck, auch wenn etwas schiefging: ein Admin, der in einer
@@ -484,6 +609,7 @@ async function ensureDashboardAccess({
       org: org.created,
       user: member.created,
       datasources,
+      dashboards,
     },
     // Was an Mitgliedschaften **aufgeloest** wurde. Gehoert nicht unter
     // `created` - es ist das Gegenteil - und gehoert ins Ergebnis, weil der
@@ -499,6 +625,10 @@ module.exports = {
   ensureDatasources,
   ensureMember,
   datasourcesFor,
+  readTenantDashboards,
+  ensureDashboards,
+  TENANT_FOLDERS,
+  TENANT_DASHBOARD_UIDS,
   GROUP,
   VERSION,
   PLURAL,

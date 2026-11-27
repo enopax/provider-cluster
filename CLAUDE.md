@@ -479,6 +479,38 @@ aendert sich. Ein Zugang, der einer alten Mitgliedschaft folgt, ist der Fehler
 aus enopax/enopax#45. Der Aufruf ist idempotent - beim zweiten Mal schreibt er
 nichts, und ein Test haelt das fest.
 
+**Dashboards werden kopiert, und zwar nur die kuratierten.** Grafana teilt
+Dashboards **nicht** ueber Organisationen: eine Mandanten-Organisation entsteht
+leer, und `Main Org.` ist fuer einen Kunden gesperrt, weil dort die
+ungeklemmten Datenquellen stehen. Kopiert wird nach **Ordner**
+(`Cluster Monitoring`) plus einer kurzen uid-Liste
+(`kubernetes-event-exporter`) - nach Ordner, damit eine Seite, die KOF dort
+dazulegt, automatisch mitkommt; eine reine uid-Liste waere beim naechsten
+Upgrade still veraltet.
+
+Die 42 anderen bleiben, wo sie sind (am 2026-11-27 durchgesehen): Kcm, Ksm,
+Istio, Victoria*, Ceph, Nvidia, Opencost und 28 Seiten
+Kube-Prometheus-Stack-Innenleben. Ihre Felder blieben beim Kunden ohnehin
+leer - die Klemme filtert die Reihen weg -, und ihre **Titel** allein verraten,
+woraus der Stapel gebaut ist.
+
+Dass eine Kopie ueberhaupt taugt, haengt an einer Eigenschaft der Vorlagen:
+sie waehlen ihre Datenquelle ueber eine Variable (`${datasource}`, Typ
+`datasource`) und nicht ueber eine feste uid. Die Kopie bindet sich damit an
+die **geklemmte** Datenquelle des Mandanten, ohne dass hier etwas umgeschrieben
+wird. Stuende dort eine uid, zeigte jede Kopie auf die ungeklemmte Quelle in
+`Main Org.` - und das waere das Leck, nicht die Loesung. Ein Test haelt es fest.
+
+`id: null` ist Pflicht: eine Dashboard-Id gilt je Organisation. Die `uid`
+bleibt, damit "schon da" feststellbar ist - und genau darauf beruht, dass ein
+zweiter Sprung nichts schreibt. Der Preis ist bekannt und gewollt: eine
+Aenderung an der Vorlage erreicht bestehende Kopien **nicht**. Wer sie
+nachziehen will, loescht sie beim Mandanten; der naechste Sprung legt sie neu.
+
+Gelesen werden die Vorlagen ausdruecklich **in `Main Org.`**, vor dem Wechsel -
+wo der Admin gerade steht, ist nicht zugesagt, denn `/api/user/using/` schreibt
+die Organisation an den **Nutzer** und nicht an die Sitzung.
+
 **Zwei Namensraeume im Regional, und beide sind nachgesehen** (2026-11-27, am
 laufenden Regional):
 
