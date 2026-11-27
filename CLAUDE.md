@@ -366,6 +366,42 @@ schreibend, und die Zieladressen abgeschrieben aus einem vom Operator
 erzeugten VMUser statt hier hingeschrieben. Siehe enopax/enopax#39.
 
 
+## Lesepfade kommen vom Admin-VMUser, nicht vom Kind
+
+Seit enopax/enopax#45 ist der VMUser eines **Kindes** insert-only: er traegt
+`/vm/insert`, `/vli`, `/vlai`, `/vti` mit `extra_label`/`extra_fields` - und
+keinen einzigen Lesepfad. `findTemplateUser` suchte aber genau ihn (Mandanten-
+und Cluster-Label), und `readTargetsFrom` erkannte Lesepfade daran, dass sie
+schon eine `extra_filters`-Angabe trugen.
+
+Folge: **seit #45 liess sich kein neuer Lesezugang bauen** - weder der einer
+Organisation noch der eines Mandanten. Es fiel niemandem auf, weil
+`enopax-kof-org-enopax` von vorher existierte und die einzige Stelle verdeckte,
+die es gebraucht haette. Aufgefallen am 2026-11-27, beim ersten echten Aufruf:
+
+    {"success":false,"error":"The template VMUser carries no read paths; ..."}
+
+Jetzt:
+
+```
+Vorlage      ein Objekt des Operators (CLUSTER_LABEL) mit mindestens einem
+             Lesepfad - beim Regional der Admin-VMUser. Der traegt die
+             vollstaendige, von KOF entschiedene Pfadliste mit Adressen und
+             **keine** Klemme.
+Auswahl      READ_PREFIXES: /vm/select, /vls, /vlas, /vts. Eine Liste, weil
+             die Klemme der Vorlage nicht mehr als Erkennungszeichen taugt -
+             dieselbe Unterscheidung, die clampFor schon immer traf.
+Klemme       setzt readTargetsFrom, und es **wirft**, wenn ein Pfad ohne
+             genau eine extra_filters-Angabe durchkaeme.
+```
+
+Die letzte Zeile ist der Preis dafuer, dass die Vorlage jetzt ein ungeklemmter
+Admin ist. Ohne sie waere ein durchgelassener Pfad ein Lesezugang auf **alle**
+Mandanten, und nichts daran wuerde auffallen.
+
+Ein eigener Zugang (`ORG_LABEL`) ist ausdruecklich keine Vorlage: er vererbte
+sonst seine Klemme weiter, und ein Fehler darin still mit.
+
 ## Der Sprung in Grafana: die Organisation sieht man, die Klemme wirkt
 
 `grafana-access.js` stellt her, was ein Klick aus der Console braucht

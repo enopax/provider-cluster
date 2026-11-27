@@ -53,6 +53,31 @@ const ORG_LABEL = 'enopax.io/kof-organisation';
  *   das dieser Zugang verhindern soll. Die Anker stehen deshalb ausdruecklich
  *   da und sind in `kof-tenant.test.js` festgehalten.
  */
+/**
+ * Welche Pfade **Lesen** sind.
+ *
+ * Hier stand einmal „alles, was schon eine `extra_filters`-Angabe traegt" -
+ * also die Lesepfade einer Vorlage daran zu erkennen, dass sie geklemmt ist.
+ * Das war elegant und ist seit enopax/enopax#45 falsch: die Haertung hat dem
+ * VMUser des **Kindes** die Lesepfade genommen, er ist jetzt insert-only
+ * (`extra_label`/`extra_fields` auf `/vm/insert`, `/vli`, `/vlai`, `/vti`).
+ * Damit trug die einzige Vorlage, die `findTemplateUser` akzeptierte, keinen
+ * einzigen Lesepfad mehr - und es liess sich **kein neuer Lesezugang
+ * bauen**, auch der einer Organisation nicht. Aufgefallen ist das erst, als
+ * am 2026-11-27 wirklich einer gebraucht wurde; `enopax-kof-org-enopax`
+ * existierte seit vorher und verdeckte es.
+ *
+ * Also eine Liste. Sie ist dieselbe Unterscheidung, die `clampFor` schon
+ * trifft - dort stand sie nur unausgesprochen -, und sie wird gegen die
+ * Pfade einer **echten** Vorlage angewandt: welche Dienste dahinterstehen und
+ * unter welcher Adresse, entscheidet weiter KOF.
+ */
+const READ_PREFIXES = ['/vm/select', '/vls', '/vlas', '/vts'];
+
+function isReadPath(path) {
+  return READ_PREFIXES.some((prefix) => path.startsWith(prefix));
+}
+
 function clampFor(pathPrefix, pattern) {
   if (pathPrefix.startsWith('/vm/select')) return `{tenant=~"${pattern}"}`;
   if (pathPrefix.startsWith('/vts')) return `"resource_attr:tenant":~"^${pattern}$"`;
@@ -94,16 +119,23 @@ function nameFor(organisationSlug) {
 function readTargetsFrom(templateUser, pattern) {
   const refs = (templateUser && templateUser.spec && templateUser.spec.targetRefs) || [];
   return refs
-    .filter((ref) => {
-      const args = ref.query_args || [];
-      return args.some((a) => a.name === 'extra_filters');
-    })
+    .filter((ref) => isReadPath((ref.paths || [])[0] || ''))
     .map((ref) => {
       const prefix = (ref.paths || [])[0] || '';
-      return {
+      const clamped = {
         ...ref,
         query_args: [{ name: 'extra_filters', values: [clampFor(prefix, pattern)] }],
       };
+      // Guertel und Hosenträger, seit die Vorlage der **ungeklemmte** Admin
+      // sein kann: ein Pfad ohne genau eine `extra_filters`-Angabe darf nicht
+      // entstehen. Haette ein `map` hier einmal einen Pfad durchgelassen,
+      // waere es ein Lesezugang auf alle Mandanten - und nichts daran wuerde
+      // auffallen.
+      const args = clamped.query_args;
+      if (args.length !== 1 || args[0].name !== 'extra_filters' || !args[0].values[0]) {
+        throw new Error(`Refusing to build an unclamped read path: ${prefix}`);
+      }
+      return clamped;
     });
 }
 
@@ -182,7 +214,20 @@ async function getVmUser(objects, namespace, name) {
   }
 }
 
-/** Irgendein vom Operator erzeugter VMUser - sie tragen alle dieselben Ziele. */
+/**
+ * Ein vom Operator erzeugter VMUser, der **Lesepfade** traegt.
+ *
+ * Hier stand "einer mit Mandanten- und Cluster-Label" - das ist der VMUser des
+ * Kindes, und der ist seit enopax/enopax#45 insert-only. Gesucht wird deshalb
+ * nach dem, worauf es ankommt: ein Objekt des Operators (am Cluster-Label
+ * erkennbar) mit mindestens einem Lesepfad. Beim Regional ist das der
+ * Admin-VMUser - er traegt die vollstaendige, von KOF entschiedene Pfadliste
+ * mitsamt Adressen, und **keine** Klemme. Die setzt `readTargetsFrom`, und sie
+ * wirft, wenn ein Pfad ohne sie durchkaeme.
+ *
+ * Eigene Zugaenge (ORG_LABEL) sind ausdruecklich keine Vorlage: sie trugen
+ * sonst ihre eigene Klemme weiter, und ein Fehler darin vererbte sich still.
+ */
 async function findTemplateUser(objects, namespace) {
   const list = await objects.listNamespacedCustomObject({
     group: GROUP, version: VERSION, namespace, plural: PLURAL,
@@ -191,7 +236,9 @@ async function findTemplateUser(objects, namespace) {
   return (
     items.find((u) => {
       const labels = (u.metadata && u.metadata.labels) || {};
-      return labels[TENANT_LABEL] && labels[CLUSTER_LABEL];
+      if (!labels[CLUSTER_LABEL] || labels[ORG_LABEL]) return false;
+      const refs = (u.spec && u.spec.targetRefs) || [];
+      return refs.some((ref) => isReadPath((ref.paths || [])[0] || ''));
     }) || null
   );
 }
@@ -234,5 +281,7 @@ module.exports = {
   clampFor,
   nameFor,
   readTargetsFrom,
+  isReadPath,
+  READ_PREFIXES,
   ORG_LABEL,
 };

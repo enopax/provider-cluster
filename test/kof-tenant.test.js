@@ -10,13 +10,22 @@ const {
   clampFor,
   nameFor,
   readTargetsFrom,
+  findTemplateUser,
+  isReadPath,
+  READ_PREFIXES,
+  ORG_LABEL,
 } = require('../provider/cluster/kof-tenant');
 
 /**
- * Eine Vorlage, wie `kof-operator` sie legt - gekuerzt, aber in der Form echt:
- * Lesepfade tragen `extra_filters`, Schreibpfade `extra_label` bzw.
+ * Eine Vorlage, wie `kof-operator` sie legte - gekuerzt, aber in der Form
+ * echt: Lesepfade mit `extra_filters`, Schreibpfade mit `extra_label` bzw.
  * `extra_fields`. Abgeschrieben von `kof-vmuser-457707155` am laufenden
  * regionalen Cluster.
+ *
+ * **Diese Form gibt es so nicht mehr.** Seit enopax/enopax#45 ist der VMUser
+ * eines Kindes insert-only, er traegt keinen Lesepfad. Die Fixture bleibt,
+ * weil sie prueft, dass Schreibpfade herausfallen; wie eine heutige Vorlage
+ * aussieht, steht weiter unten als ADMIN_TEMPLATE und CHILD_TEMPLATE.
  */
 const TEMPLATE = {
   metadata: {
@@ -221,4 +230,89 @@ test('ohne Organisation gibt es keinen Mandanten', async () => {
   });
   assert.strictEqual(result.created, false);
   assert.strictEqual(apis.calls.createdUsers.length, 0);
+});
+
+/* ------------------------------------------- Vorlagen nach enopax/enopax#45 */
+
+/** Der Admin-VMUser des Regionals, wie er wirklich aussieht: alle acht Pfade,
+ *  **keine** query_args. Am 2026-11-27 abgelesen. */
+const ADMIN_TEMPLATE = {
+  metadata: { labels: { 'k0rdent.mirantis.com/kof-cluster-name': 'ep-eu1-fsn1-standalone' } },
+  spec: {
+    targetRefs: [
+      { paths: ['/vlas/.*'], static: { url: 'http://vlselect-audit:9471' } },
+      { paths: ['/vlai/.*'], static: { url: 'http://vlinsert-audit:9481' } },
+      { paths: ['/vls/.*'], static: { url: 'http://vlselect:9471' } },
+      { paths: ['/vli/.*'], static: { url: 'http://vlinsert:9481' } },
+      { paths: ['/vm/select/.*'], static: { url: 'http://vmselect:8481' } },
+      { paths: ['/vm/insert/.*'], static: { url: 'http://vminsert:8480' } },
+      { paths: ['/vts/.*'], static: { url: 'http://vtselect:10471' } },
+      { paths: ['/vti/.*'], static: { url: 'http://vtinsert:10481' } },
+    ],
+  },
+};
+
+/** Der VMUser eines Kindes, seit #45 **insert-only**. Trug vorher Lesepfade. */
+const CHILD_TEMPLATE = {
+  metadata: {
+    labels: {
+      'k0rdent.mirantis.com/kof-tenant-id': 'enopax_enopax-dev',
+      'k0rdent.mirantis.com/kof-cluster-name': 'dev-box1',
+    },
+  },
+  spec: {
+    targetRefs: [
+      { paths: ['/vlai/.*'], query_args: [{ name: 'extra_fields', values: ['tenant=enopax_enopax-dev'] }] },
+      { paths: ['/vli/.*'], query_args: [{ name: 'extra_fields', values: ['tenant=enopax_enopax-dev'] }] },
+      { paths: ['/vm/insert/.*'], query_args: [{ name: 'extra_label', values: ['tenant=enopax_enopax-dev'] }] },
+      { paths: ['/vti/.*'], query_args: [{ name: 'extra_fields', values: ['resource_attr:tenant=enopax_enopax-dev'] }] },
+    ],
+  },
+};
+
+const listing = (items) => ({ listNamespacedCustomObject: async () => ({ items }) });
+
+test('baut den Lesezugang aus dem ungeklemmten Admin - und klemmt jeden Pfad', async () => {
+  const user = vmUserFor('enopax', ADMIN_TEMPLATE);
+  const paths = user.spec.targetRefs.map((r) => r.paths[0]);
+  // Genau die vier Lesepfade, keine Schreibpfade.
+  assert.deepStrictEqual(paths, ['/vlas/.*', '/vls/.*', '/vm/select/.*', '/vts/.*']);
+  for (const ref of user.spec.targetRefs) {
+    assert.strictEqual(ref.query_args.length, 1, `${ref.paths[0]} hat mehr als eine Angabe`);
+    assert.strictEqual(ref.query_args[0].name, 'extra_filters');
+    assert.ok(ref.query_args[0].values[0].includes('enopax'));
+    // Die Adresse kommt aus der Vorlage und ist nicht erfunden.
+    assert.ok(ref.static.url.startsWith('http://'));
+  }
+});
+
+test('waehlt nicht den insert-only-VMUser des Kindes als Vorlage', async () => {
+  // Genau daran scheiterte es: `findTemplateUser` nahm ihn, weil er Mandanten-
+  // und Cluster-Label traegt - und seit #45 hat er keinen Lesepfad mehr.
+  const chosen = await findTemplateUser(listing([CHILD_TEMPLATE, ADMIN_TEMPLATE]), 'kcm-system');
+  assert.strictEqual(chosen, ADMIN_TEMPLATE);
+
+  // Und allein ergibt er nichts, statt etwas Ungeklemmtes.
+  assert.strictEqual(await findTemplateUser(listing([CHILD_TEMPLATE]), 'kcm-system'), null);
+  assert.throws(() => vmUserFor('enopax', CHILD_TEMPLATE), /unclamped/);
+});
+
+test('nimmt einen eigenen Zugang nicht als Vorlage', async () => {
+  // Sonst vererbte sich eine eigene Klemme - und ein Fehler darin still mit.
+  const own = {
+    metadata: {
+      labels: {
+        'k0rdent.mirantis.com/kof-cluster-name': 'ep-eu1-fsn1-standalone',
+        [ORG_LABEL]: 'enopax',
+      },
+    },
+    spec: { targetRefs: [{ paths: ['/vm/select/.*'], query_args: [{ name: 'extra_filters', values: ['x'] }] }] },
+  };
+  assert.strictEqual(await findTemplateUser(listing([own]), 'kcm-system'), null);
+});
+
+test('welche Pfade als Lesen gelten, steht an einer Stelle', () => {
+  assert.deepStrictEqual(READ_PREFIXES, ['/vm/select', '/vls', '/vlas', '/vts']);
+  for (const p of ['/vm/select/.*', '/vls/.*', '/vlas/.*', '/vts/.*']) assert.ok(isReadPath(p), p);
+  for (const p of ['/vm/insert/.*', '/vli/.*', '/vlai/.*', '/vti/.*']) assert.ok(!isReadPath(p), p);
 });
