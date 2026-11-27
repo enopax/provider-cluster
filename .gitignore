@@ -22,3 +22,9 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Worktrees. Jede Aenderung entsteht in einem eigenen (siehe CLAUDE.md), und
+# sie liegen unter `.claude/worktrees/` - also im Baum, aber nicht im
+# Repository. Ohne diese Zeile steht `?? .claude/` bei jedem `git status`, und
+# irgendwann committet jemand einen Worktree mit.
+.claude/worktrees/
