@@ -454,12 +454,29 @@ heisst `<organisation>_<projekt>` und kann kein `@` enthalten. `Main Org.` wird
 aufzuloesen ist, **scheitert laut** - lieber ein Fehler als ein Sprung, der
 mehr erlaubt als zugesagt.
 
-**Der Admin-Kontext wird im `finally` zurueckgesetzt.** `/api/datasources`
-arbeitet in der *aktuellen* Organisation des Aufrufers. Bleibt der Admin in der
-eines Mandanten stehen, legt der naechste Aufruf fuer einen anderen Mandanten
-dort an - ein Fehler, der erst auffaellt, wenn jemand fremde Zahlen sieht. Ein
-Test haelt fest, dass der Rueckwechsel auch nach einem Fehler der letzte
-Aufruf ist.
+**Die Organisation des Admins wird nie geaendert - jede Anfrage traegt ihr Ziel
+als `X-Grafana-Org-Id`.** Hier stand ein `POST /api/user/using/<org>` vor den
+Schreibzugriffen und ein Rueckwechsel im `finally`. Das war gefaehrlich, denn
+`/api/user/using/` schreibt die Organisation an den **Nutzer** und nicht an die
+Sitzung - und der **grafana-operator** benutzt dieselben Zugangsdaten. Solange
+der Admin in einer Mandanten-Organisation parkte, provisionierte der Operator
+dorthin.
+
+Belegt, nicht befuerchtet: am 2026-11-27 lag `KPS / Kubernetes / Networking /
+Workload` in `enopax_enopax-dev`, von niemandem dorthin kopiert. Bei einem
+Dashboard ist das Unordnung; haette der Operator in demselben Fenster eine
+**Datenquelle** abgeglichen, waere eine **ungeklemmte** beim Mandanten
+entstanden - Lesezugriff auf alle.
+
+Mit der Kopfzeile gibt es das Fenster nicht mehr, und es gibt auch keinen
+Zustand, der nach einem Fehler schiefstehen koennte. Am laufenden Grafana 10.4
+geprueft, lesend **und** schreibend (ein Ordner, auf org 4 adressiert, landete
+dort und nicht in `Main Org.`, der Admin blieb in 1). Die Attrappe **wirft**,
+wenn jemand doch `POST /api/user/using/` aufruft.
+
+Nicht zu verwechseln: `POST /api/users/<id>/using/<org>` setzt die
+Vorgabe-Organisation des **Mandantennutzers**, damit er nach der Anmeldung
+dort landet. Das bleibt.
 
 **Der Name des VMUser traegt einen Abdruck der Kennung.** Die Kennung enthaelt
 einen Unterstrich, den ein Kubernetes-Name nicht erlaubt. Ihn durch `-` zu

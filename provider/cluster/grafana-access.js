@@ -282,13 +282,34 @@ function datasourcesFor(credential) {
   ];
 }
 
-/** Ein Aufruf an Grafanas API, als Admin. `404` ist eine Antwort, kein Fehler. */
-async function gf(ctx, method, path, body) {
+/**
+ * Ein Aufruf an Grafanas API, als Admin - und auf eine **bestimmte**
+ * Organisation adressiert.
+ *
+ * `orgId` wird als `X-Grafana-Org-Id` mitgeschickt. Hier stand vorher ein
+ * `POST /api/user/using/<org>` davor und ein Rueckwechsel danach, und das war
+ * gefaehrlich: `/api/user/using/` schreibt die Organisation an den **Nutzer**,
+ * nicht an die Sitzung. Solange der Admin dort parkte, schrieb der
+ * **grafana-operator** - der dieselben Zugangsdaten benutzt - seine Objekte in
+ * die Organisation des Mandanten.
+ *
+ * Belegt, nicht befuerchtet: am 2026-11-27 lag `KPS / Kubernetes / Networking
+ * / Workload` in `enopax_enopax-dev`, von niemandem dorthin kopiert. Bei einem
+ * Dashboard ist das Unordnung; haette der Operator in demselben Fenster eine
+ * **Datenquelle** abgeglichen, waere eine ungeklemmte beim Mandanten
+ * entstanden - und damit Lesezugriff auf alle.
+ *
+ * Mit der Kopfzeile gibt es dieses Fenster nicht: der Admin bleibt, wo er ist,
+ * und jede Anfrage traegt ihr Ziel selbst. Am laufenden Grafana 10.4 geprueft,
+ * lesend und schreibend.
+ */
+async function gf(ctx, method, path, body, orgId) {
   const response = await ctx.fetchImpl(`${ctx.baseUrl}${path}`, {
     method,
     headers: {
       authorization: `Basic ${Buffer.from(`${ctx.admin.user}:${ctx.admin.password}`).toString('base64')}`,
       'content-type': 'application/json',
+      ...(orgId === undefined ? {} : { 'X-Grafana-Org-Id': String(orgId) }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(ctx.timeoutMs),
@@ -347,13 +368,13 @@ const TENANT_DASHBOARD_UIDS = (process.env.KOF_TENANT_DASHBOARD_UIDS || 'kuberne
  * grafana-operator.
  */
 async function readTenantDashboards(ctx) {
-  const found = await gf(ctx, 'GET', '/api/search?type=dash-db&limit=500');
+  const found = await gf(ctx, 'GET', '/api/search?type=dash-db&limit=500', undefined, MAIN_ORG_ID);
   const wanted = (found.body || []).filter(
     (d) => TENANT_FOLDERS.includes(d.folderTitle) || TENANT_DASHBOARD_UIDS.includes(d.uid),
   );
   const out = [];
   for (const entry of wanted) {
-    const full = await gf(ctx, 'GET', `/api/dashboards/uid/${encodeURIComponent(entry.uid)}`);
+    const full = await gf(ctx, 'GET', `/api/dashboards/uid/${encodeURIComponent(entry.uid)}`, undefined, MAIN_ORG_ID);
     if (!full.body) continue;
     out.push({
       uid: entry.uid,
@@ -379,11 +400,11 @@ async function readTenantDashboards(ctx) {
  * Vorlage zeigt in der neuen auf etwas anderes oder nichts. Die `uid` bleibt,
  * damit "schon da" ueberhaupt feststellbar ist.
  */
-async function ensureDashboards(ctx, sources) {
+async function ensureDashboards(ctx, sources, orgId) {
   const touched = [];
   const folders = new Map();
   for (const src of sources) {
-    const exists = await gf(ctx, 'GET', `/api/dashboards/uid/${encodeURIComponent(src.uid)}`);
+    const exists = await gf(ctx, 'GET', `/api/dashboards/uid/${encodeURIComponent(src.uid)}`, undefined, orgId);
     if (exists.body) continue;
 
     let folderUid = null;
@@ -396,7 +417,7 @@ async function ensureDashboards(ctx, sources) {
           const made = await gf(ctx, 'POST', '/api/folders', {
             uid: src.folderUid,
             title: src.folderTitle,
-          });
+          }, orgId);
           folders.set(src.folderTitle, (made.body && made.body.uid) || src.folderUid);
         } catch {
           folders.set(src.folderTitle, src.folderUid);
@@ -410,7 +431,7 @@ async function ensureDashboards(ctx, sources) {
       folderUid,
       overwrite: false,
       message: 'Kopie fuer den Mandanten (enopax/enopax#58)',
-    });
+    }, orgId);
     touched.push({ uid: src.uid, title: src.title, action: 'copied' });
   }
   return touched;
@@ -436,18 +457,18 @@ async function ensureOrg(ctx, tenantId) {
  * Klick die Kennung der Datenquelle aendern, und damit jedes gespeicherte
  * Dashboard, das sie nennt.
  */
-async function ensureDatasources(ctx, credential) {
+async function ensureDatasources(ctx, credential, orgId) {
   const wanted = datasourcesFor(credential);
   const touched = [];
   for (const spec of wanted) {
-    const found = await gf(ctx, 'GET', `/api/datasources/name/${encodeURIComponent(spec.name)}`);
+    const found = await gf(ctx, 'GET', `/api/datasources/name/${encodeURIComponent(spec.name)}`, undefined, orgId);
     if (!found.body) {
-      await gf(ctx, 'POST', '/api/datasources', spec);
+      await gf(ctx, 'POST', '/api/datasources', spec, orgId);
       touched.push({ name: spec.name, action: 'created' });
       continue;
     }
     if (found.body.basicAuthUser !== spec.basicAuthUser || found.body.url !== spec.url) {
-      await gf(ctx, 'PUT', `/api/datasources/${found.body.id}`, { ...spec, id: found.body.id });
+      await gf(ctx, 'PUT', `/api/datasources/${found.body.id}`, { ...spec, id: found.body.id }, orgId);
       touched.push({ name: spec.name, action: 'corrected' });
     }
   }
@@ -570,35 +591,20 @@ async function ensureDashboardAccess({
   const admin = await readGrafanaAdmin(regionalCore, grafanaNamespace);
   const ctx = { baseUrl, admin, fetchImpl, timeoutMs };
 
-  // Die Vorlagen **vor** dem Wechsel lesen, und ausdruecklich in `Main Org.`:
-  // dort provisioniert der grafana-operator, und wo der Admin gerade steht,
-  // ist nicht zugesagt - `/api/user/using/` schreibt es an den Nutzer, nicht
-  // an die Sitzung.
-  await gf(ctx, 'POST', `/api/user/using/${MAIN_ORG_ID}`);
+  // Die Vorlagen aus `Main Org.` - dort provisioniert der grafana-operator.
   const sources = await readTenantDashboards(ctx);
 
   const org = await ensureOrg(ctx, tenantId);
-  // Der Admin muss in die Organisation wechseln: `/api/datasources` arbeitet
-  // immer in der **aktuellen** Organisation des Aufrufers. Ohne diesen
-  // Wechsel entstehen die geklemmten Datenquellen in `Main Org.` - also genau
-  // dort, wo sie nicht hingehoeren.
-  await gf(ctx, 'POST', `/api/user/using/${org.orgId}`);
-  let datasources;
-  let dashboards;
-  let member;
-  try {
-    datasources = await ensureDatasources(ctx, credential);
-    // Erst die Datenquellen, dann die Dashboards: eine Seite ohne Datenquelle
-    // ist eine Seite mit Fehlermeldungen, und die Variable bindet beim
-    // Oeffnen, nicht beim Anlegen.
-    dashboards = await ensureDashboards(ctx, sources);
-    member = await ensureMember(ctx, org.orgId, { email, name });
-  } finally {
-    // Zurueck, auch wenn etwas schiefging: ein Admin, der in einer
-    // Mandanten-Organisation stehenbleibt, legt beim naechsten Aufruf fuer
-    // einen anderen Mandanten dort an.
-    await gf(ctx, 'POST', `/api/user/using/${MAIN_ORG_ID}`).catch(() => {});
-  }
+
+  // **Kein Wechsel der Organisation des Admins.** Jede Anfrage traegt ihr Ziel
+  // als `X-Grafana-Org-Id`; siehe `gf()`, warum das der Unterschied zwischen
+  // ordentlich und gefaehrlich ist.
+  const datasources = await ensureDatasources(ctx, credential, org.orgId);
+  // Erst die Datenquellen, dann die Dashboards: eine Seite ohne Datenquelle
+  // ist eine Seite mit Fehlermeldungen, und die Variable bindet beim Oeffnen,
+  // nicht beim Anlegen.
+  const dashboards = await ensureDashboards(ctx, sources, org.orgId);
+  const member = await ensureMember(ctx, org.orgId, { email, name });
 
   return {
     tenantId,

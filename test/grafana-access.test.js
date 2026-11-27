@@ -180,17 +180,22 @@ function fakeGrafana(state = {}) {
   const datasources = state.datasources || new Map();
   const orgNames = state.orgNames || new Map([[1, 'Main Org.']]);
   const deletedOrgs = [];
-  // Die Attrappe muss wissen, wo der Admin steht: `/api/dashboards/...` und
-  // `/api/datasources` arbeiten in der **aktuellen** Organisation, und genau
-  // daran haengt, ob eine Kopie am richtigen Ort landet.
-  let currentOrg = 1;
+  // Die Attrappe liest das Ziel aus `X-Grafana-Org-Id`, so wie das echte
+  // Grafana. Ohne Kopfzeile gilt `Main Org.` - und genau daran haengt, ob eine
+  // Kopie am richtigen Ort landet.
+  //
+  // Die Organisation des **Admins** wird hier nirgends geaendert: dass niemand
+  // sie aendert, ist die Eigenschaft, um die es geht.
+  const adminOrg = 1;
   const foldersByOrg = new Map();
   const dashboardsByOrg = new Map([[1, new Map((state.sources || SOURCES).map((d) => [d.uid, d]))]]);
   let nextId = 10;
 
   const fetchImpl = async (url, init) => {
     const path = url.replace(/^https:\/\/[^/]+/, '');
-    calls.push(`${init.method} ${path}`);
+    const headers = init.headers || {};
+    const currentOrg = Number(headers['X-Grafana-Org-Id'] || adminOrg);
+    calls.push(`${init.method} ${path}${headers['X-Grafana-Org-Id'] ? ` @${currentOrg}` : ''}`);
     const body = init.body ? JSON.parse(init.body) : null;
     const ok = (payload, status = 200) => ({
       ok: true,
@@ -281,11 +286,13 @@ function fakeGrafana(state = {}) {
       members.set(org, list.filter((x) => x.userId !== Number(m[2])));
       return ok(undefined);
     }
-    if ((m = path.match(/^\/api\/user\/using\/(\d+)$/))) {
-      currentOrg = Number(m[1]);
-      return ok(undefined);
+    if (path.match(/^\/api\/user\/using\/\d+$/)) {
+      // Das darf nicht mehr vorkommen - es aenderte die Organisation des
+      // Admins, und der grafana-operator benutzt denselben Nutzer.
+      throw new Error(`fakeGrafana: niemand darf die Organisation des Admins aendern (${path})`);
     }
     if (path.match(/^\/api\/users\/\d+\/using\/\d+$/)) {
+      // Die Vorgabe-Organisation des **Mandantennutzers** - die ist gewollt.
       return ok(undefined);
     }
     if (path.startsWith('/api/search')) {
@@ -419,18 +426,21 @@ test('stellt alles her und legt die Person als Viewer in ihre Organisation', asy
   // Die Datenquellen entstehen **in** der Mandanten-Organisation: der Admin
   // wechselt vorher hin und danach zurueck. Ohne den Wechsel landen die
   // geklemmten Datenquellen in Main Org.
-  const switches = grafana.calls.filter((c) => c.startsWith('POST /api/user/using/'));
-  // Drei Wechsel, und die Reihenfolge ist die Aussage: **erst** ausdruecklich
-  // nach `Main Org.`, um die Dashboard-Vorlagen dort zu lesen - wo der Admin
-  // vorher stand, ist nicht zugesagt -, dann in die Organisation des
-  // Mandanten, und am Ende zurueck.
-  assert.deepStrictEqual(switches, [
-    `POST /api/user/using/${ga.MAIN_ORG_ID}`,
-    `POST /api/user/using/${orgId}`,
-    `POST /api/user/using/${ga.MAIN_ORG_ID}`,
-  ]);
-  const firstDs = grafana.calls.findIndex((c) => c === 'POST /api/datasources');
-  assert.ok(grafana.calls.indexOf(`POST /api/user/using/${orgId}`) < firstDs);
+  // **Die Organisation des Admins wird nie geaendert.** Das ist der Kern: der
+  // grafana-operator benutzt denselben Nutzer, und solange der Admin in einer
+  // Mandanten-Organisation parkte, schrieb der Operator dorthin. Die Attrappe
+  // wirft, wenn es doch jemand versucht.
+  assert.deepStrictEqual(
+    grafana.calls.filter((c) => c.startsWith('POST /api/user/using/')),
+    [],
+  );
+  // Stattdessen traegt jede schreibende Anfrage ihr Ziel selbst.
+  assert.ok(
+    grafana.calls.includes(`POST /api/datasources @${orgId}`),
+    grafana.calls.join('\n'),
+  );
+  // Und die Vorlagen werden ausdruecklich in Main Org. gelesen.
+  assert.ok(grafana.calls.some((c) => c.startsWith(`GET /api/search`) && c.endsWith(`@${ga.MAIN_ORG_ID}`)));
 });
 
 test('entfernt die Person aus Main Org., wo die ungeklemmten Quellen stehen', async () => {
@@ -514,9 +524,12 @@ test('zweimal hintereinander schreibt beim zweiten Mal nichts', async () => {
   });
 });
 
-test('stellt den Admin-Kontext auch dann zurueck, wenn es scheitert', async () => {
-  // Ein Admin, der in einer Mandanten-Organisation stehenbleibt, legt beim
-  // naechsten Aufruf fuer einen **anderen** Mandanten dort an.
+test('hat keinen Admin-Kontext, der nach einem Fehler zurueckzustellen waere', async () => {
+  // Hier stand ein Test ueber den Rueckwechsel im `finally`. Er ist
+  // gegenstandslos geworden, und das ist der Fortschritt: es gibt keinen
+  // Zustand mehr, der schiefstehen koennte. Jede Anfrage traegt ihr Ziel als
+  // `X-Grafana-Org-Id`, der Admin bleibt, wo er ist - auch wenn mitten im
+  // Ablauf etwas scheitert.
   const regional = fakeRegional({ vmUserExists: true });
   const grafana = fakeGrafana();
   const broken = async (url, init) => {
@@ -533,10 +546,10 @@ test('stellt den Admin-Kontext auch dann zurueck, wenn es scheitert', async () =
     }),
     /returned 500/,
   );
-  assert.strictEqual(
-    grafana.calls.at(-1),
-    `POST /api/user/using/${ga.MAIN_ORG_ID}`,
-    'der letzte Aufruf muss der Rueckwechsel sein',
+  assert.deepStrictEqual(
+    grafana.calls.filter((c) => c.startsWith('POST /api/user/using/')),
+    [],
+    'niemand darf die Organisation des Admins anfassen, auch nicht im Fehlerfall',
   );
 });
 
@@ -746,7 +759,8 @@ test('legt beim zweiten Sprung keine Kopie nach', async () => {
     regionalCore: regional.core, regionalObjects: regional.objects,
     fetchImpl: grafana.fetchImpl, ...BASE,
   });
-  const vorher = grafana.calls.filter((c) => c === 'POST /api/dashboards/db').length;
+  const zaehle = () => grafana.calls.filter((c) => c.startsWith('POST /api/dashboards/db')).length;
+  const vorher = zaehle();
   const zweiter = await ga.ensureDashboardAccess({
     regionalCore: regional.core, regionalObjects: regional.objects,
     fetchImpl: grafana.fetchImpl, ...BASE,
@@ -754,11 +768,7 @@ test('legt beim zweiten Sprung keine Kopie nach', async () => {
 
   assert.strictEqual(vorher, 3);
   assert.deepStrictEqual(zweiter.created.dashboards, []);
-  assert.strictEqual(
-    grafana.calls.filter((c) => c === 'POST /api/dashboards/db').length,
-    3,
-    'beim zweiten Mal darf nichts geschrieben werden',
-  );
+  assert.strictEqual(zaehle(), 3, 'beim zweiten Mal darf nichts geschrieben werden');
 });
 
 test('legt den Ordner in der Organisation des Mandanten an', async () => {
