@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { clampFor, readTargetsFrom } = require('./kof-tenant');
+const { clampFor, readTargetsFrom, findTemplateUser } = require('./kof-tenant');
 
 /**
  * Der Zugang, den ein Sprung aus der Console braucht.
@@ -36,14 +36,28 @@ const VERSION = 'v1beta1';
 const PLURAL = 'vmusers';
 
 /**
- * Der Namensraum der KOF-Objekte **im Regional**.
+ * **Zwei** Namensraeume im Regional, und das ist nicht Unordnung, sondern
+ * nachgesehen - am 2026-11-27 am laufenden Regional:
  *
- * `kof`, und das steht hier ausdruecklich: die bewaehrten Manifeste legen den
- * per-Mandant-VMUser dorthin (`vmuser-tenant-a-read.yaml` in enopax/cluster),
- * und dort liest `vmauth`. Ein VMUser in einem anderen Namensraum ist
- * gueltig, wird aber von niemandem gelesen - ein Fehler, der nichts meldet.
+ *   kcm-system   die VMUser. Dort legt der kof-operator seine ab
+ *                (`kof-vmuser-419106402`, Label `kof-tenant-id` und
+ *                `kof-cluster-name`), und dort liegt auch der Org-Lesezugang
+ *                aus kof-tenant.js. Unser per-Mandant-Zugang gehoert dazu.
+ *   kof          das Grafana und sein Admin-Secret
+ *                (`grafana-admin-credentials`), dazu `vmauth` selbst.
+ *
+ * Hier stand einmal **ein** Namensraum, `kof`, fuer beides - geraten aus dem
+ * Beispielmanifest `vmuser-tenant-a-read.yaml`. Der Endpunkt lief damit bis in
+ * den Regional und scheiterte dort mit "No operator-made VMUser to copy the
+ * read paths from": in `kof` liegt nur das Handmanifest.
+ *
+ * Dass ein VMUser trotzdem in beiden Namensraeumen wirkt, liegt an `vmauth`:
+ * `selectAllByDefault: true` ohne Selektoren, es nimmt sie aus **allen**
+ * Namensraeumen. Unser Zugang liegt deshalb dort, wo jemand ihn sucht - bei
+ * den anderen maschinell erzeugten.
  */
-const KOF_NAMESPACE = process.env.KOF_NAMESPACE || 'kof';
+const VMUSER_NAMESPACE = process.env.KOF_VMUSER_NAMESPACE || 'kcm-system';
+const GRAFANA_NAMESPACE = process.env.KOF_GRAFANA_NAMESPACE || 'kof';
 
 /** Grafanas eigene Organisation. Dort stehen die **ungeklemmten** Datenquellen. */
 const MAIN_ORG_ID = 1;
@@ -161,13 +175,10 @@ async function ensureTenantReadUser({ core, objects, namespace, tenantId }) {
   }
 
   if (!existing) {
-    const list = await objects.listNamespacedCustomObject({
-      group: GROUP, version: VERSION, namespace, plural: PLURAL,
-    });
-    const template = ((list && list.items) || []).find((u) => {
-      const labels = (u.metadata && u.metadata.labels) || {};
-      return labels['kof-tenant'] || labels['k0rdent.mirantis.com/kof-tenant'];
-    });
+    // Woran eine Operator-Vorlage zu erkennen ist, entscheidet kof-tenant.js
+    // und nicht diese Datei. Hier standen einmal geratene Label-Namen, und
+    // die Suche fand nichts - am laufenden Regional aufgefallen.
+    const template = await findTemplateUser(objects, namespace);
     if (!template) {
       // Nichts raten. Die Lesepfade entscheidet KOF, und eine erfundene
       // Adresse ergibt einen VMUser, der gueltig ist und ins Leere zeigt.
@@ -391,7 +402,8 @@ async function ensureMember(ctx, orgId, person) {
 async function ensureDashboardAccess({
   regionalCore,
   regionalObjects,
-  namespace = KOF_NAMESPACE,
+  vmUserNamespace = VMUSER_NAMESPACE,
+  grafanaNamespace = GRAFANA_NAMESPACE,
   grafanaUrl,
   tenantId,
   email,
@@ -404,9 +416,9 @@ async function ensureDashboardAccess({
   const baseUrl = assertSafeGrafanaUrl(grafanaUrl);
 
   const credential = await ensureTenantReadUser({
-    core: regionalCore, objects: regionalObjects, namespace, tenantId,
+    core: regionalCore, objects: regionalObjects, namespace: vmUserNamespace, tenantId,
   });
-  const admin = await readGrafanaAdmin(regionalCore, namespace);
+  const admin = await readGrafanaAdmin(regionalCore, grafanaNamespace);
   const ctx = { baseUrl, admin, fetchImpl, timeoutMs };
 
   const org = await ensureOrg(ctx, tenantId);
@@ -449,7 +461,8 @@ module.exports = {
   GROUP,
   VERSION,
   PLURAL,
-  KOF_NAMESPACE,
+  VMUSER_NAMESPACE,
+  GRAFANA_NAMESPACE,
   MAIN_ORG_ID,
   GRAFANA_SECRET,
   assertSafeGrafanaUrl,

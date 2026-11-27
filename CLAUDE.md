@@ -419,10 +419,38 @@ aendert sich. Ein Zugang, der einer alten Mitgliedschaft folgt, ist der Fehler
 aus enopax/enopax#45. Der Aufruf ist idempotent - beim zweiten Mal schreibt er
 nichts, und ein Test haelt das fest.
 
-**Der Namensraum ist `kof`, nicht der des ClusterDeployment.** Die bewaehrten
-Manifeste legen den VMUser dorthin, und dort liest `vmauth`. Ein VMUser in
-einem anderen Namensraum ist gueltig und wird von niemandem gelesen - ein
-Fehler, der nichts meldet. `KOF_NAMESPACE` kann es umstellen.
+**Zwei Namensraeume im Regional, und beide sind nachgesehen** (2026-11-27, am
+laufenden Regional):
+
+```
+kcm-system   die VMUser - dort legt der kof-operator seine ab
+             (kof-vmuser-419106402, Label kof-tenant-id + kof-cluster-name),
+             und dort liegt auch der Org-Lesezugang aus kof-tenant.js
+kof          Grafana, sein Admin-Secret grafana-admin-credentials, und vmauth
+```
+
+Hier stand einmal **ein** Namensraum, `kof`, fuer beides - geraten aus dem
+Beispielmanifest `vmuser-tenant-a-read.yaml` in enopax/cluster. Der Endpunkt
+lief damit bis in den Regional und scheiterte dort:
+
+    {"success":false,"error":"No operator-made VMUser to copy the read paths from"}
+
+In `kof` liegt nur das Handmanifest. Gefunden hat das keine Testsuite, sondern
+**ein echter Aufruf gegen den laufenden Regional** - und dasselbe gilt fuer die
+Label-Namen: `grafana-access.js` hatte sie geraten (`kof-tenant`), die Attrappe
+trug dieselbe Erfindung, und deshalb war die Suite gruen. Woran eine
+Operator-Vorlage zu erkennen ist, entscheidet jetzt `kof-tenant.js` und gibt es
+nach aussen (`findTemplateUser`, `TENANT_LABEL`, `CLUSTER_LABEL`). Zwei
+Erfindungen derselben Sache gehen auseinander.
+
+Dass ein VMUser in beiden Namensraeumen *wirkt*, liegt an `vmauth`:
+`selectAllByDefault: true` ohne Selektoren. Unser Zugang liegt trotzdem dort,
+wo jemand ihn sucht - bei den anderen maschinell erzeugten.
+`KOF_VMUSER_NAMESPACE` und `KOF_GRAFANA_NAMESPACE` stellen es um.
+
+`regionalNamespace` aus dem Handler ist **nicht** gemeint: das ist der
+Namensraum des ClusterDeployment auf dem *Management*. Dass er auch
+`kcm-system` heisst, ist Zufall.
 
 ## Das Bild muss `linux/amd64` sein
 

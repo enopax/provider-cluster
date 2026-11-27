@@ -1032,6 +1032,12 @@ async function dashboardAccess(input) {
     const result = await grafanaAccess.ensureDashboardAccess({
       regionalCore: regionalKc.makeApiClient(k8s.CoreV1Api),
       regionalObjects: regionalKc.makeApiClient(k8s.CustomObjectsApi),
+      // Die Namensraeume bleiben die Vorgaben des Moduls: die VMUser liegen
+      // im Regional in `kcm-system`, Grafana und sein Admin-Secret in `kof`.
+      // Nachgesehen, nicht abgeleitet - `regionalNamespace` von oben ist der
+      // Namensraum des ClusterDeployment auf dem **Management** und hat mit
+      // dem Aufbau im Regional nichts zu tun. Dass beide `kcm-system` heissen,
+      // ist Zufall und kein Grund, den einen fuer den anderen zu nehmen.
       grafanaUrl: input.grafanaUrl,
       tenantId: input.tenantId,
       email: input.email,
