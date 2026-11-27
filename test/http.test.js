@@ -65,6 +65,18 @@ function serve() {
       }
       return { success: true, id: input.id, via: 'ep-eu1-fsn1-standalone', kubeconfig: 'apiVersion: v1\n' };
     },
+    dashboardAccess: async (input) => {
+      seen.push({ op: 'dashboardAccess', id: input.id, tenantId: input.tenantId, email: input.email });
+      if (!input.tenantId) return { success: false, error: 'Missing required field: tenantId' };
+      if (input.id.endsWith('private')) {
+        return {
+          success: false,
+          available: false,
+          error: 'This cluster has no regional cluster, so there is no Grafana to open.',
+        };
+      }
+      return { success: true, id: input.id, tenantId: input.tenantId, orgId: 5 };
+    },
   });
 
   return new Promise((resolve) => {
@@ -227,6 +239,68 @@ test('ohne Schluessel gibt es auch keine Zeitreihen', async () => {
   try {
     const response = await fetch(`${base}/v1/clusters/${encodeURIComponent(ID)}/series`);
     assert.strictEqual(response.status, 401);
+  } finally {
+    server.close();
+  }
+});
+
+test('der Sprungzugang nimmt einen Rumpf an und gibt die Organisation zurueck', async () => {
+  const { base, seen, server } = await serve();
+  try {
+    const response = await call(base, `/v1/clusters/${encodeURIComponent(ID)}/dashboard-access`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        tenantId: 'acme_telemetry',
+        email: 'ada@enopax.io',
+        name: 'Ada',
+        grafanaUrl: 'https://grafana.eu1-fsn1.kof.enopax.io',
+      }),
+    });
+
+    assert.strictEqual(response.status, 200);
+    assert.deepStrictEqual(await response.json(), {
+      success: true, id: ID, tenantId: 'acme_telemetry', orgId: 5,
+    });
+    // Die Kennung mit Schraegstrich muss ungeteilt ankommen, und der Rumpf
+    // ueberhaupt - ohne `express.json()` waere `tenantId` undefined.
+    assert.deepStrictEqual(seen, [
+      { op: 'dashboardAccess', id: ID, tenantId: 'acme_telemetry', email: 'ada@enopax.io' },
+    ]);
+  } finally {
+    server.close();
+  }
+});
+
+test('ein fehlendes Feld ist 400, kein Ausfall', async () => {
+  const { base, server } = await serve();
+  try {
+    const response = await call(base, `/v1/clusters/${encodeURIComponent(ID)}/dashboard-access`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'ada@enopax.io' }),
+    });
+    assert.strictEqual(response.status, 400);
+  } finally {
+    server.close();
+  }
+});
+
+test('ein Cluster ohne Region ist 409 - dort gibt es nichts zu oeffnen', async () => {
+  const { base, server } = await serve();
+  try {
+    const response = await call(
+      base,
+      `/v1/clusters/${encodeURIComponent('kcm-system/private')}/dashboard-access`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tenantId: 'acme_x', email: 'a@b.c', grafanaUrl: 'https://g.kof.enopax.io' }),
+      },
+    );
+    assert.strictEqual(response.status, 409);
+    const body = await response.json();
+    assert.match(body.error, /no regional cluster/);
   } finally {
     server.close();
   }

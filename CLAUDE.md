@@ -366,6 +366,64 @@ schreibend, und die Zieladressen abgeschrieben aus einem vom Operator
 erzeugten VMUser statt hier hingeschrieben. Siehe enopax/enopax#39.
 
 
+## Der Sprung in Grafana: die Organisation sieht man, die Klemme wirkt
+
+`grafana-access.js` stellt her, was ein Klick aus der Console braucht
+(enopax/enopax#58): einen per-Mandant-Lesezugang im Regional, eine
+Grafana-Organisation, darin geklemmte Datenquellen, und die anspringende
+Person als **Viewer** darin.
+
+Die Rangfolge der Schutzmassnahmen, und sie ist nicht beliebig:
+
+| | wirkt |
+|---|---|
+| Grafana-Organisation | welche Datenquelle jemand **sieht** |
+| `extra_filters` im VMUser | was sie **zurueckgibt** |
+
+Nur das Zweite ist eine Sicherheitsgrenze. Wer hier etwas vereinfacht und die
+Datenquelle direkt auf `vmselect` zeigen laesst, hat die Organisation noch und
+die Grenze nicht - und der Etikettenbrowser zeigt dann die Werte aller
+Mandanten. Bei Traces ist es nicht einmal eine Abwaegung: die
+Jaeger-Datenquelle hat kein Gegenstueck zu `customQueryParameters`.
+
+**Viewer ist festgeschrieben und kein Parameter.** Ein Editor bearbeitet die
+Datenquelle und nimmt die Klemme ab. Ein vorhandener Editor wird deshalb
+herabgesetzt, nicht stehengelassen.
+
+**Aus `Main Org.` wird entfernt.** Dort stehen die ungeklemmten Datenquellen
+des Operators. Eine Mitgliedschaft darin ist das Leck aus enopax/enopax#39,
+nur ueber Grafana statt ueber die Kennung.
+
+**Der Admin-Kontext wird im `finally` zurueckgesetzt.** `/api/datasources`
+arbeitet in der *aktuellen* Organisation des Aufrufers. Bleibt der Admin in der
+eines Mandanten stehen, legt der naechste Aufruf fuer einen anderen Mandanten
+dort an - ein Fehler, der erst auffaellt, wenn jemand fremde Zahlen sieht. Ein
+Test haelt fest, dass der Rueckwechsel auch nach einem Fehler der letzte
+Aufruf ist.
+
+**Der Name des VMUser traegt einen Abdruck der Kennung.** Die Kennung enthaelt
+einen Unterstrich, den ein Kubernetes-Name nicht erlaubt. Ihn durch `-` zu
+ersetzen waere **nicht** eindeutig: `a_b-c` und `a-b_c` fielen zusammen, und
+dann teilen sich zwei Projekte einen Lesezugang. Die Klemme selbst wird aus
+der **genauen** Kennung gebaut, nie aus dem Namen.
+
+**Die Zieladresse wird geprueft, obwohl sie von uns kommt.** `grafanaUrl`
+stammt aus `provider_regions.grafanaUrl` - derselben Quelle, an die der Mensch
+gleich geschickt wird; zwei Quellen waeren schlimmer. Geprueft wird sie
+trotzdem auf `https`, kein eingebettetes Kennwort und einen Host unter
+`KOF_GRAFANA_HOST_SUFFIX`: dieser Dienst traegt die Admin-Zugangsdaten des
+Regionals, und eine beliebige Adresse hiesse, sie irgendwohin zu schicken.
+
+**Vor jedem Sprung, nicht einmal beim Anlegen.** Wer heute im Projekt ist,
+aendert sich. Ein Zugang, der einer alten Mitgliedschaft folgt, ist der Fehler
+aus enopax/enopax#45. Der Aufruf ist idempotent - beim zweiten Mal schreibt er
+nichts, und ein Test haelt das fest.
+
+**Der Namensraum ist `kof`, nicht der des ClusterDeployment.** Die bewaehrten
+Manifeste legen den VMUser dorthin, und dort liest `vmauth`. Ein VMUser in
+einem anderen Namensraum ist gueltig und wird von niemandem gelesen - ein
+Fehler, der nichts meldet. `KOF_NAMESPACE` kann es umstellen.
+
 ## Das Bild muss `linux/amd64` sein
 
 Der App-Host ist x86_64, der Entwicklungsrechner arm64. `docker build` nimmt

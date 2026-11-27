@@ -57,6 +57,38 @@ function registerRoutes(app, handlers) {
     res.json(result);
   });
 
+  /**
+   * Der Zugang, den ein Sprung aus der Console braucht.
+   *
+   * `POST`, obwohl es sich wie ein Lesen anfuehlt: der Aufruf **legt an** -
+   * eine Grafana-Organisation, Datenquellen, einen Nutzer, einen VMUser. Ein
+   * `GET`, das schreibt, darf nicht zwischengespeichert werden, und genau das
+   * wuerde irgendwann jemand tun.
+   *
+   * `409` fuer "es gibt dort nichts zu oeffnen" - ein Private Cluster hat
+   * keinen regionalen Cluster und damit kein Grafana. Das ist kein Fehler
+   * dieses Dienstes, sondern eine Eigenschaft der Variante, und der Aufrufer
+   * soll es dem Menschen sagen koennen, statt eine 500 anzuzeigen.
+   */
+  app.post('/v1/clusters/:id/dashboard-access', async (req, res) => {
+    const result = await handlers.dashboardAccess({
+      id: req.params.id,
+      tenantId: req.body && req.body.tenantId,
+      email: req.body && req.body.email,
+      name: req.body && req.body.name,
+      grafanaUrl: req.body && req.body.grafanaUrl,
+    });
+
+    if (!result.success) {
+      if (result.available === false) return res.status(409).json(result);
+      // Ein fehlendes Feld ist ein Fehler des Aufrufers, kein Ausfall.
+      const missing = /^Missing required field/.test(result.error || '');
+      return res.status(missing ? 400 : 500).json(result);
+    }
+
+    res.json(result);
+  });
+
   return app;
 }
 
