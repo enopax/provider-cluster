@@ -379,12 +379,48 @@ async function ensureMember(ctx, orgId, person) {
 
   await gf(ctx, 'POST', `/api/users/${userId}/using/${orgId}`);
 
-  const main = await gf(ctx, 'GET', `/api/orgs/${MAIN_ORG_ID}/users`);
-  if (((main.body) || []).some((m) => m.userId === userId)) {
-    await gf(ctx, 'DELETE', `/api/orgs/${MAIN_ORG_ID}/users/${userId}`);
+  // **Genau eine Organisation, und zwar diese.** Hier stand "aus Main Org.
+  // entfernen", und das war zu wenig: Grafana legt bei
+  // `auto_assign_org: false` beim Anlegen eines Nutzers eine **persoenliche**
+  // Organisation an, benannt nach seiner E-Mail - und macht ihn dort zum
+  // **Admin**. Ein Admin bearbeitet Datenquellen, also haette er sich dort
+  // eine ungeklemmte legen koennen: `http://vmselect-cluster:8481` direkt,
+  // ohne Zugangsdaten, von Grafana serverseitig geholt. Damit laese er die
+  // Telemetrie aller Mandanten.
+  //
+  // Am 2026-11-27 am laufenden Regional gefunden, beim ersten echten Aufruf:
+  // Organisation 5 hiess `amueller@niggemann.it`, Rolle Admin.
+  //
+  // Die ganze Trennung beruht darauf, dass ein Mensch **Viewer** ist und
+  // Datenquellen nicht aendern kann. Jede Mitgliedschaft daneben hebt das auf,
+  // nicht nur die in Main Org.
+  const elsewhere = [];
+  const mine = await gf(ctx, 'GET', `/api/users/${userId}/orgs`);
+  for (const membership of (mine.body || [])) {
+    if (membership.orgId === orgId) continue;
+    try {
+      await gf(ctx, 'DELETE', `/api/orgs/${membership.orgId}/users/${userId}`);
+      elsewhere.push({ orgId: membership.orgId, action: 'removed' });
+    } catch (error) {
+      // Den letzten Admin laesst Grafana nicht gehen ("Cannot remove last
+      // organization admin"). Bei der **persoenlichen** Organisation ist das
+      // kein Hindernis, sondern die Antwort: sie ist eine Nebenwirkung des
+      // Anlegens, traegt nichts und kann weg. Erkennbar daran, dass sie nach
+      // der Anmeldung des Nutzers heisst - eine Mandanten-Organisation heisst
+      // `<organisation>_<projekt>` und kann kein `@` enthalten.
+      const istPersoenlich =
+        membership.orgId !== MAIN_ORG_ID && membership.name === person.email;
+      if (!istPersoenlich) {
+        // Nicht stillschweigend hinnehmen: eine fremde Mitgliedschaft, die
+        // nicht aufgeloest werden kann, gehoert nach oben gemeldet.
+        throw error;
+      }
+      await gf(ctx, 'DELETE', `/api/orgs/${membership.orgId}`);
+      elsewhere.push({ orgId: membership.orgId, action: 'org deleted' });
+    }
   }
 
-  return { userId, created };
+  return { userId, created, elsewhere };
 }
 
 /**
@@ -449,6 +485,11 @@ async function ensureDashboardAccess({
       user: member.created,
       datasources,
     },
+    // Was an Mitgliedschaften **aufgeloest** wurde. Gehoert nicht unter
+    // `created` - es ist das Gegenteil - und gehoert ins Ergebnis, weil der
+    // Aufrufer es protokollieren soll: hier wird jemandem ein Zugang
+    // genommen.
+    elsewhere: member.elsewhere,
   };
 }
 

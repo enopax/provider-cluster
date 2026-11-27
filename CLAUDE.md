@@ -426,9 +426,33 @@ Jaeger-Datenquelle hat kein Gegenstueck zu `customQueryParameters`.
 Datenquelle und nimmt die Klemme ab. Ein vorhandener Editor wird deshalb
 herabgesetzt, nicht stehengelassen.
 
-**Aus `Main Org.` wird entfernt.** Dort stehen die ungeklemmten Datenquellen
-des Operators. Eine Mitgliedschaft darin ist das Leck aus enopax/enopax#39,
-nur ueber Grafana statt ueber die Kennung.
+**Genau eine Organisation, und zwar die des Mandanten.** Hier stand "aus
+`Main Org.` entfernen", und das war zu wenig. Grafana legt bei
+`auto_assign_org: false` beim Anlegen eines Nutzers eine **persoenliche**
+Organisation an, benannt nach seiner E-Mail - und macht ihn dort zum **Admin**.
+Ein Admin bearbeitet Datenquellen. Er haette sich dort
+`http://vmselect-cluster:8481` direkt eintragen koennen, ohne Zugangsdaten,
+von Grafana serverseitig geholt - und damit die Telemetrie **aller** Mandanten
+gelesen.
+
+Am 2026-11-27 am laufenden Regional gefunden, beim ersten echten Aufruf:
+Organisation 5 hiess `amueller@niggemann.it`, Rolle Admin. Kein Test konnte das
+sehen, weil die Attrappe diese Nebenwirkung nicht hatte; jetzt hat sie sie.
+
+Die ganze Trennung beruht darauf, dass ein Mensch **Viewer** ist und
+Datenquellen nicht aendern kann. Jede Mitgliedschaft daneben hebt das auf -
+nicht nur die in `Main Org.`, wo die ungeklemmten Quellen des Operators stehen
+(das waere enopax/enopax#39 ueber Grafana).
+
+Deshalb: nach dem Eintragen in die Mandanten-Organisation wird **jede** andere
+Mitgliedschaft aufgeloest. Den letzten Admin laesst Grafana nicht gehen
+("Cannot remove last organization admin"); bei der persoenlichen Organisation
+ist das kein Hindernis, sondern die Antwort - sie wird geloescht. Erkennbar ist
+sie daran, dass sie nach der Anmeldung heisst: eine Mandanten-Organisation
+heisst `<organisation>_<projekt>` und kann kein `@` enthalten. `Main Org.` wird
+**nie** geloescht, nur verlassen. Eine fremde Mitgliedschaft, die nicht
+aufzuloesen ist, **scheitert laut** - lieber ein Fehler als ein Sprung, der
+mehr erlaubt als zugesagt.
 
 **Der Admin-Kontext wird im `finally` zurueckgesetzt.** `/api/datasources`
 arbeitet in der *aktuellen* Organisation des Aufrufers. Bleibt der Admin in der
