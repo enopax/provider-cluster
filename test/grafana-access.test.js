@@ -142,6 +142,8 @@ function fakeGrafana(state = {}) {
   const users = state.users || new Map();
   const members = state.members || new Map();
   const datasources = state.datasources || new Map();
+  const orgNames = state.orgNames || new Map([[1, 'Main Org.']]);
+  const deletedOrgs = [];
   let nextId = 10;
 
   const fetchImpl = async (url, init) => {
@@ -163,6 +165,7 @@ function fakeGrafana(state = {}) {
     if (path === '/api/orgs' && init.method === 'POST') {
       const id = nextId++;
       orgs.set(body.name, id);
+      orgNames.set(id, body.name);
       return ok({ orgId: id });
     }
     if ((m = path.match(/^\/api\/datasources\/name\/(.+)$/))) {
@@ -184,10 +187,32 @@ function fakeGrafana(state = {}) {
     if (path === '/api/admin/users') {
       const u = { id: nextId++, email: body.email };
       users.set(body.email, u);
+      // Wie das echte Grafana bei `auto_assign_org: false`: eine
+      // **persoenliche** Organisation, benannt nach der Anmeldung, und der
+      // neue Nutzer ist dort **Admin**. Genau das war das Leck.
+      const personal = nextId++;
+      orgs.set(body.email, personal);
+      orgNames.set(personal, body.email);
+      members.set(personal, [{ userId: u.id, role: 'Admin' }]);
       return ok({ id: u.id });
     }
     if ((m = path.match(/^\/api\/orgs\/(\d+)\/users$/)) && init.method === 'GET') {
       return ok(members.get(Number(m[1])) || []);
+    }
+    if ((m = path.match(/^\/api\/users\/(\d+)\/orgs$/))) {
+      const uid = Number(m[1]);
+      const out = [];
+      for (const [org, list] of members) {
+        const found = (list || []).find((x) => x.userId === uid);
+        if (found) out.push({ orgId: org, name: orgNames.get(org) || `org-${org}`, role: found.role });
+      }
+      return ok(out);
+    }
+    if ((m = path.match(/^\/api\/orgs\/(\d+)$/)) && init.method === 'DELETE') {
+      const org = Number(m[1]);
+      members.delete(org);
+      deletedOrgs.push(org);
+      return ok(undefined);
     }
     if ((m = path.match(/^\/api\/orgs\/(\d+)\/users$/)) && init.method === 'POST') {
       const org = Number(m[1]);
@@ -205,7 +230,13 @@ function fakeGrafana(state = {}) {
     }
     if ((m = path.match(/^\/api\/orgs\/(\d+)\/users\/(\d+)$/)) && init.method === 'DELETE') {
       const org = Number(m[1]);
-      members.set(org, (members.get(org) || []).filter((x) => x.userId !== Number(m[2])));
+      const list = members.get(org) || [];
+      const leaving = list.find((x) => x.userId === Number(m[2]));
+      // Wie das echte Grafana: den letzten Admin laesst es nicht gehen.
+      if (leaving && leaving.role === 'Admin' && list.filter((x) => x.role === 'Admin').length === 1) {
+        return { ok: false, status: 400, text: async () => '{"message":"Cannot remove last organization admin"}' };
+      }
+      members.set(org, list.filter((x) => x.userId !== Number(m[2])));
       return ok(undefined);
     }
     if (path.startsWith('/api/user/using/') || path.match(/^\/api\/users\/\d+\/using\/\d+$/)) {
@@ -214,7 +245,7 @@ function fakeGrafana(state = {}) {
     throw new Error(`fakeGrafana: unhandled ${init.method} ${path}`);
   };
 
-  return { fetchImpl, calls, orgs, users, members, datasources };
+  return { fetchImpl, calls, orgs, users, members, datasources, orgNames, deletedOrgs };
 }
 
 /** Der regionale Cluster aus Papier. */
@@ -474,4 +505,83 @@ test('erkennt eine Operator-Vorlage an denselben Labels wie kof-tenant.js', asyn
   assert.strictEqual(CLUSTER_LABEL, 'k0rdent.mirantis.com/kof-cluster-name');
   assert.ok(TEMPLATE.metadata.labels[TENANT_LABEL], 'die Attrappe traegt das echte Label');
   assert.ok(TEMPLATE.metadata.labels[CLUSTER_LABEL], 'die Attrappe traegt das echte Label');
+});
+
+test('laesst die Person in **genau einer** Organisation stehen', async () => {
+  // Der Fund vom 2026-11-27 am laufenden Regional: Grafana legt bei
+  // `auto_assign_org: false` eine persoenliche Organisation an, benannt nach
+  // der E-Mail, und macht den Nutzer dort **Admin**. Ein Admin bearbeitet
+  // Datenquellen - er haette sich dort `http://vmselect-cluster:8481` direkt
+  // eintragen koennen, ohne Zugangsdaten, serverseitig geholt, und damit die
+  // Telemetrie **aller** Mandanten gelesen.
+  //
+  // Die ganze Trennung beruht darauf, dass ein Mensch Viewer ist. Jede
+  // Mitgliedschaft daneben hebt sie auf.
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core,
+    regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl,
+    ...BASE,
+  });
+
+  // Direkt am Zustand: in welchen Organisationen steht ueberhaupt jemand?
+  const mitgliedschaften = [...grafana.members.entries()]
+    .filter(([, list]) => (list || []).length)
+    .map(([org, list]) => [org, list.map((m) => m.role)]);
+  assert.deepStrictEqual(mitgliedschaften, [[result.orgId, ['Viewer']]]);
+
+  // Und die persoenliche Organisation ist weg, nicht nur verlassen - Grafana
+  // laesst den letzten Admin nicht gehen.
+  assert.strictEqual(grafana.deletedOrgs.length, 1, 'die persoenliche Organisation muss geloescht sein');
+  assert.ok(result.created.user);
+  // Was aufgeloest wurde, steht im Ergebnis - der Aufrufer soll es
+  // protokollieren koennen, hier wird jemandem ein Zugang genommen.
+  assert.deepStrictEqual(result.elsewhere.map((e) => e.action), ['org deleted']);
+});
+
+test('entfernt auch eine Mitgliedschaft in Main Org.', async () => {
+  const regional = fakeRegional();
+  const users = new Map([['ada@enopax.io', { id: 7, email: 'ada@enopax.io' }]]);
+  const members = new Map([[ga.MAIN_ORG_ID, [{ userId: 7, role: 'Viewer' }]]]);
+  const grafana = fakeGrafana({ users, members });
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core,
+    regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl,
+    ...BASE,
+  });
+
+  assert.deepStrictEqual(grafana.members.get(ga.MAIN_ORG_ID), []);
+  assert.deepStrictEqual(
+    result.elsewhere,
+    [{ orgId: ga.MAIN_ORG_ID, action: 'removed' }],
+  );
+  // Main Org. wird **nie** geloescht, nur verlassen.
+  assert.deepStrictEqual(grafana.deletedOrgs, []);
+});
+
+test('meldet eine fremde Mitgliedschaft, die nicht aufzuloesen ist', async () => {
+  // Nicht stillschweigend hinnehmen: wer sonst wo Admin ist, bleibt es, und
+  // dann gilt die Zusage "Viewer und nichts darueber" nicht mehr. Lieber ein
+  // Fehler als ein Sprung, der mehr erlaubt als gedacht.
+  const regional = fakeRegional();
+  const users = new Map([['ada@enopax.io', { id: 7, email: 'ada@enopax.io' }]]);
+  const orgNames = new Map([[1, 'Main Org.'], [9, 'fremdes-projekt']]);
+  const members = new Map([[9, [{ userId: 7, role: 'Admin' }]]]);
+  const grafana = fakeGrafana({ users, members, orgNames });
+
+  await assert.rejects(
+    ga.ensureDashboardAccess({
+      regionalCore: regional.core,
+      regionalObjects: regional.objects,
+      fetchImpl: grafana.fetchImpl,
+      ...BASE,
+    }),
+    /last organization admin/,
+  );
+  assert.deepStrictEqual(grafana.deletedOrgs, [], 'eine fremde Organisation wird nicht geloescht');
 });
