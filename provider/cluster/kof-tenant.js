@@ -222,6 +222,13 @@ function isNotFound(error) {
 
 module.exports = {
   ensureOrganisationTenant,
+  // Nach aussen gegeben, damit niemand die Label-Namen ein zweites Mal
+  // raet: woran ein vom Operator erzeugter VMUser zu erkennen ist, steht
+  // genau hier. Der Sprungzugang (grafana-access.js) hat sie geraten und
+  // fand deshalb keine Vorlage - am laufenden Regional aufgefallen.
+  findTemplateUser,
+  TENANT_LABEL,
+  CLUSTER_LABEL,
   vmUserFor,
   patternFor,
   clampFor,

@@ -13,7 +13,16 @@ const ga = require('../provider/cluster/grafana-access');
 
 /** Ein VMUser, wie der Operator ihn legt: Lese- **und** Schreibpfade. */
 const TEMPLATE = {
-  metadata: { labels: { 'kof-tenant': 'acme_x', 'kof-cluster': 'c1' } },
+  // Die **echten** Label-Namen, am laufenden Regional abgelesen. Hier stand
+  // einmal `kof-tenant`/`kof-cluster`, geraten - und weil Attrappe und Code
+  // dieselbe Erfindung trugen, war der Test gruen, waehrend der Endpunkt in
+  // Produktion keine Vorlage fand.
+  metadata: {
+    labels: {
+      'k0rdent.mirantis.com/kof-tenant-id': 'acme_x',
+      'k0rdent.mirantis.com/kof-cluster-name': 'c1',
+    },
+  },
   spec: {
     targetRefs: [
       {
@@ -224,8 +233,10 @@ function fakeRegional({ vmUserExists = false } = {}) {
   }
 
   const notFound = Object.assign(new Error('not found'), { code: 404 });
+  const seenNamespaces = [];
   const core = {
-    readNamespacedSecret: async ({ name: n }) => {
+    readNamespacedSecret: async ({ name: n, namespace: ns }) => {
+      seenNamespaces.push(`secret:${n}@${ns}`);
       if (!secrets.has(n)) throw notFound;
       return secrets.get(n);
     },
@@ -237,16 +248,20 @@ function fakeRegional({ vmUserExists = false } = {}) {
     },
   };
   const objects = {
-    getNamespacedCustomObject: async () => {
+    getNamespacedCustomObject: async ({ namespace: ns }) => {
+      seenNamespaces.push(`get:${ns}`);
       if (!vmUserExists) throw notFound;
       return { metadata: { name } };
     },
-    listNamespacedCustomObject: async () => ({ items: [TEMPLATE] }),
+    listNamespacedCustomObject: async ({ namespace: ns }) => {
+      seenNamespaces.push(`list:${ns}`);
+      return { items: [TEMPLATE] };
+    },
     createNamespacedCustomObject: async ({ body }) => {
       created.push(`vmuser/${body.metadata.name}`);
     },
   };
-  return { core, objects, created, secrets };
+  return { core, objects, created, secrets, seenNamespaces };
 }
 
 const BASE = {
@@ -419,4 +434,44 @@ test('fehlende Pflichtfelder sagen, welches', async () => {
       new RegExp(missing),
     );
   }
+});
+
+test('sucht die VMUser in kcm-system und das Grafana-Secret in kof', async () => {
+  // Der Fehler, der nur am laufenden Regional auffiel: beides in `kof`
+  // gesucht, geraten aus dem Beispielmanifest. Der Endpunkt lief bis in den
+  // Cluster und scheiterte mit "No operator-made VMUser to copy the read
+  // paths from" - in `kof` liegt nur das Handmanifest, die des Operators
+  // liegen in `kcm-system`.
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+
+  await ga.ensureDashboardAccess({
+    regionalCore: regional.core,
+    regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl,
+    ...BASE,
+  });
+
+  const vmuser = regional.seenNamespaces.filter((x) => x.startsWith('get:') || x.startsWith('list:'));
+  assert.ok(vmuser.length > 0, 'es muss nach VMUser gesehen worden sein');
+  for (const call of vmuser) {
+    assert.match(call, /:kcm-system$/, `VMUser-Zugriff im falschen Namensraum: ${call}`);
+  }
+  assert.ok(
+    regional.seenNamespaces.includes('secret:grafana-admin-credentials@kof'),
+    `Grafana-Secret nicht aus kof gelesen: ${regional.seenNamespaces.join(', ')}`,
+  );
+  // Und die Vorgaben stehen, damit ein Aufrufer sie nicht setzen muss.
+  assert.strictEqual(ga.VMUSER_NAMESPACE, 'kcm-system');
+  assert.strictEqual(ga.GRAFANA_NAMESPACE, 'kof');
+});
+
+test('erkennt eine Operator-Vorlage an denselben Labels wie kof-tenant.js', async () => {
+  // Nicht an eigenen: zwei Erfindungen derselben Sache gehen auseinander, und
+  // genau das ist passiert.
+  const { TENANT_LABEL, CLUSTER_LABEL } = require('../provider/cluster/kof-tenant');
+  assert.strictEqual(TENANT_LABEL, 'k0rdent.mirantis.com/kof-tenant-id');
+  assert.strictEqual(CLUSTER_LABEL, 'k0rdent.mirantis.com/kof-cluster-name');
+  assert.ok(TEMPLATE.metadata.labels[TENANT_LABEL], 'die Attrappe traegt das echte Label');
+  assert.ok(TEMPLATE.metadata.labels[CLUSTER_LABEL], 'die Attrappe traegt das echte Label');
 });
