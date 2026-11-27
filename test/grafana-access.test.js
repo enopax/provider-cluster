@@ -135,6 +135,42 @@ test('die Datenquellen lesen alle ueber vmauth', () => {
 
 /* ------------------------------------------------------------------ Ablauf */
 
+/**
+ * Die Vorlagen in `Main Org.`, in der Form der echten - am 2026-11-27 am
+ * laufenden Regional abgelesen. Entscheidend ist `${datasource}`: die Seiten
+ * waehlen ihre Datenquelle ueber eine **Variable** nach Typ, nicht ueber eine
+ * uid. Stuende dort eine uid, zeigte jede Kopie auf die ungeklemmte Quelle in
+ * `Main Org.` - und das waere ein Leck.
+ */
+const SOURCES = [
+  {
+    uid: 'k8s_views_pods', title: 'Kubernetes / Views / Pods',
+    folderTitle: 'Cluster Monitoring', folderUid: 'afurpjhddp6v4c',
+    dashboard: {
+      uid: 'k8s_views_pods', title: 'Kubernetes / Views / Pods', id: 77, version: 4,
+      panels: [{ datasource: { type: 'prometheus', uid: '${datasource}' } }],
+    },
+  },
+  {
+    uid: 'rYdddlPWk', title: 'Node Exporter Full',
+    folderTitle: 'Cluster Monitoring', folderUid: 'afurpjhddp6v4c',
+    dashboard: { uid: 'rYdddlPWk', title: 'Node Exporter Full', id: 78, version: 2, panels: [] },
+  },
+  {
+    uid: 'kubernetes-event-exporter', title: 'All Kubernetes Events',
+    folderTitle: 'Kubernetes Events', folderUid: 'afurpl96ut43ke',
+    dashboard: { uid: 'kubernetes-event-exporter', title: 'All Kubernetes Events', id: 79, version: 1, panels: [] },
+  },
+  {
+    // Aus einem Ordner, der unsere Plattform beschreibt - darf **nicht**
+    // mitkopiert werden. Leere Felder beim Kunden, und der Titel allein
+    // verraet den Aufbau.
+    uid: 'victoria-metrics-cluster', title: 'VictoriaMetrics - cluster',
+    folderTitle: 'Victoria Metrics', folderUid: 'vmfolder',
+    dashboard: { uid: 'victoria-metrics-cluster', title: 'VictoriaMetrics - cluster', id: 80, version: 1, panels: [] },
+  },
+];
+
 /** Ein Grafana aus Papier: merkt sich jeden Aufruf und antwortet knapp. */
 function fakeGrafana(state = {}) {
   const calls = [];
@@ -144,6 +180,12 @@ function fakeGrafana(state = {}) {
   const datasources = state.datasources || new Map();
   const orgNames = state.orgNames || new Map([[1, 'Main Org.']]);
   const deletedOrgs = [];
+  // Die Attrappe muss wissen, wo der Admin steht: `/api/dashboards/...` und
+  // `/api/datasources` arbeiten in der **aktuellen** Organisation, und genau
+  // daran haengt, ob eine Kopie am richtigen Ort landet.
+  let currentOrg = 1;
+  const foldersByOrg = new Map();
+  const dashboardsByOrg = new Map([[1, new Map((state.sources || SOURCES).map((d) => [d.uid, d]))]]);
   let nextId = 10;
 
   const fetchImpl = async (url, init) => {
@@ -239,13 +281,54 @@ function fakeGrafana(state = {}) {
       members.set(org, list.filter((x) => x.userId !== Number(m[2])));
       return ok(undefined);
     }
-    if (path.startsWith('/api/user/using/') || path.match(/^\/api\/users\/\d+\/using\/\d+$/)) {
+    if ((m = path.match(/^\/api\/user\/using\/(\d+)$/))) {
+      currentOrg = Number(m[1]);
       return ok(undefined);
+    }
+    if (path.match(/^\/api\/users\/\d+\/using\/\d+$/)) {
+      return ok(undefined);
+    }
+    if (path.startsWith('/api/search')) {
+      const here = dashboardsByOrg.get(currentOrg) || new Map();
+      return ok([...here.values()].map((d) => ({
+        uid: d.uid, title: d.title, folderTitle: d.folderTitle, folderUid: d.folderUid,
+      })));
+    }
+    if ((m = path.match(/^\/api\/dashboards\/uid\/(.+)$/))) {
+      const here = dashboardsByOrg.get(currentOrg) || new Map();
+      const d = here.get(decodeURIComponent(m[1]));
+      return d ? ok({ dashboard: d.dashboard, meta: { folderUid: d.folderUid } }) : notFound;
+    }
+    if (path === '/api/folders' && init.method === 'POST') {
+      const here = foldersByOrg.get(currentOrg) || new Map();
+      if (here.has(body.uid)) {
+        return { ok: false, status: 409, text: async () => '{"message":"folder exists"}' };
+      }
+      here.set(body.uid, body.title);
+      foldersByOrg.set(currentOrg, here);
+      return ok({ uid: body.uid, title: body.title });
+    }
+    if (path === '/api/dashboards/db' && init.method === 'POST') {
+      const here = dashboardsByOrg.get(currentOrg) || new Map();
+      const d = body.dashboard;
+      if (d.id !== null) {
+        // Wie das echte Grafana: eine Id aus einer anderen Organisation zeigt
+        // dort auf etwas anderes oder nichts.
+        return { ok: false, status: 400, text: async () => '{"message":"dashboard id is not valid here"}' };
+      }
+      here.set(d.uid, {
+        uid: d.uid, title: d.title, folderTitle: null, folderUid: body.folderUid, dashboard: d,
+      });
+      dashboardsByOrg.set(currentOrg, here);
+      return ok({ uid: d.uid, status: 'success' });
     }
     throw new Error(`fakeGrafana: unhandled ${init.method} ${path}`);
   };
 
-  return { fetchImpl, calls, orgs, users, members, datasources, orgNames, deletedOrgs };
+  return {
+    fetchImpl, calls, orgs, users, members, datasources, orgNames, deletedOrgs,
+    foldersByOrg, dashboardsByOrg, orgNow: () => currentOrg,
+  };
 }
 
 /** Der regionale Cluster aus Papier. */
@@ -337,7 +420,12 @@ test('stellt alles her und legt die Person als Viewer in ihre Organisation', asy
   // wechselt vorher hin und danach zurueck. Ohne den Wechsel landen die
   // geklemmten Datenquellen in Main Org.
   const switches = grafana.calls.filter((c) => c.startsWith('POST /api/user/using/'));
+  // Drei Wechsel, und die Reihenfolge ist die Aussage: **erst** ausdruecklich
+  // nach `Main Org.`, um die Dashboard-Vorlagen dort zu lesen - wo der Admin
+  // vorher stand, ist nicht zugesagt -, dann in die Organisation des
+  // Mandanten, und am Ende zurueck.
   assert.deepStrictEqual(switches, [
+    `POST /api/user/using/${ga.MAIN_ORG_ID}`,
     `POST /api/user/using/${orgId}`,
     `POST /api/user/using/${ga.MAIN_ORG_ID}`,
   ]);
@@ -422,7 +510,7 @@ test('zweimal hintereinander schreibt beim zweiten Mal nichts', async () => {
 
   assert.strictEqual(first.orgId, second.orgId);
   assert.deepStrictEqual(second.created, {
-    vmUser: false, org: false, user: false, datasources: [],
+    vmUser: false, org: false, user: false, datasources: [], dashboards: [],
   });
 });
 
@@ -584,4 +672,127 @@ test('meldet eine fremde Mitgliedschaft, die nicht aufzuloesen ist', async () =>
     /last organization admin/,
   );
   assert.deepStrictEqual(grafana.deletedOrgs, [], 'eine fremde Organisation wird nicht geloescht');
+});
+
+/* --------------------------------------------- Dashboards je Mandant (#58) */
+
+test('kopiert die kuratierten Seiten in die Organisation des Mandanten', async () => {
+  // Grafana teilt Dashboards nicht ueber Organisationen; eine
+  // Mandanten-Organisation entsteht leer, und `Main Org.` ist gesperrt, weil
+  // dort die ungeklemmten Datenquellen stehen.
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core,
+    regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl,
+    ...BASE,
+  });
+
+  const kopiert = result.created.dashboards.map((d) => d.uid).sort();
+  assert.deepStrictEqual(kopiert, ['k8s_views_pods', 'kubernetes-event-exporter', 'rYdddlPWk']);
+
+  // Und sie liegen **in** der Organisation des Mandanten, nicht in Main Org.
+  const beimMandanten = [...(grafana.dashboardsByOrg.get(result.orgId) || new Map()).keys()].sort();
+  assert.deepStrictEqual(beimMandanten, ['k8s_views_pods', 'kubernetes-event-exporter', 'rYdddlPWk']);
+});
+
+test('kopiert nichts, was unsere Plattform beschreibt', async () => {
+  // `VictoriaMetrics - cluster` liegt im Ordner `Victoria Metrics`. Beim
+  // Kunden blieben seine Felder leer - die Klemme filtert die Reihen weg -,
+  // und der Titel allein verraet, woraus der Stapel gebaut ist.
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core,
+    regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl,
+    ...BASE,
+  });
+
+  const beimMandanten = [...(grafana.dashboardsByOrg.get(result.orgId) || new Map()).keys()];
+  assert.ok(!beimMandanten.includes('victoria-metrics-cluster'), beimMandanten.join(', '));
+  // In Main Org. bleibt sie unberuehrt stehen.
+  assert.ok([...grafana.dashboardsByOrg.get(1).keys()].includes('victoria-metrics-cluster'));
+});
+
+test('die Kopie waehlt ihre Datenquelle ueber die Variable, nicht ueber eine uid', async () => {
+  // Daran haengt die ganze Uebung: eine feste uid zeigte auf die
+  // **ungeklemmte** Quelle in Main Org., und der Mandant laese alles.
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core,
+    regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl,
+    ...BASE,
+  });
+
+  const kopie = grafana.dashboardsByOrg.get(result.orgId).get('k8s_views_pods').dashboard;
+  assert.deepStrictEqual(kopie.panels[0].datasource, { type: 'prometheus', uid: '${datasource}' });
+  // Die Id der Vorlage darf nicht mitreisen - sie gilt je Organisation.
+  assert.strictEqual(kopie.id, null);
+  assert.strictEqual(kopie.uid, 'k8s_views_pods', 'die uid bleibt, sonst ist "schon da" nicht feststellbar');
+});
+
+test('legt beim zweiten Sprung keine Kopie nach', async () => {
+  const regional = fakeRegional({ vmUserExists: true });
+  const grafana = fakeGrafana();
+
+  await ga.ensureDashboardAccess({
+    regionalCore: regional.core, regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl, ...BASE,
+  });
+  const vorher = grafana.calls.filter((c) => c === 'POST /api/dashboards/db').length;
+  const zweiter = await ga.ensureDashboardAccess({
+    regionalCore: regional.core, regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl, ...BASE,
+  });
+
+  assert.strictEqual(vorher, 3);
+  assert.deepStrictEqual(zweiter.created.dashboards, []);
+  assert.strictEqual(
+    grafana.calls.filter((c) => c === 'POST /api/dashboards/db').length,
+    3,
+    'beim zweiten Mal darf nichts geschrieben werden',
+  );
+});
+
+test('legt den Ordner in der Organisation des Mandanten an', async () => {
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core, regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl, ...BASE,
+  });
+
+  const ordner = [...(grafana.foldersByOrg.get(result.orgId) || new Map()).values()].sort();
+  assert.deepStrictEqual(ordner, ['Cluster Monitoring', 'Kubernetes Events']);
+  // Derselbe Ordner-uid wie in der Vorlage, damit die Ablage ueberall gleich
+  // aussieht.
+  assert.ok([...(grafana.foldersByOrg.get(result.orgId)).keys()].includes('afurpjhddp6v4c'));
+});
+
+test('ein vorhandener Ordner ist kein Fehler', async () => {
+  // Grafana antwortet 409. Dann steht er, und das ist das Ziel.
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+  const once = { done: false };
+  const fetchImpl = async (url, init) => {
+    if (url.includes('/api/folders') && init.method === 'POST' && !once.done) {
+      once.done = true;
+      return { ok: false, status: 409, text: async () => '{"message":"folder title exists"}' };
+    }
+    return grafana.fetchImpl(url, init);
+  };
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core, regionalObjects: regional.objects,
+    fetchImpl, ...BASE,
+  });
+  assert.strictEqual(result.created.dashboards.length, 3);
 });
