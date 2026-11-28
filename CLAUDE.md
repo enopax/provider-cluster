@@ -505,9 +505,30 @@ ungeklemmten Datenquellen stehen. Kopiert wird nach **Ordner**
 dazulegt, automatisch mitkommt; eine reine uid-Liste waere beim naechsten
 Upgrade still veraltet.
 
-Die 42 anderen bleiben, wo sie sind (am 2026-11-27 durchgesehen): Kcm, Ksm,
-Istio, Victoria*, Ceph, Nvidia, Opencost und 28 Seiten
-Kube-Prometheus-Stack-Innenleben. Ihre Felder blieben beim Kunden ohnehin
+**Nach Ordner allein ist zu grob, und zweimal hat es gekostet.** In
+`Kubernetes Events` handelt nur eine der beiden Seiten vom Cluster des Kunden;
+und in `Victoria Logs` liegt neben dem Stapel-Dashboard der **Log-Browser des
+Mandanten** (`aeckkt1pio0sgc`, "VictoriaLogs Dashboard"). Ohne ihn gab es
+ueberhaupt keinen Weg zu den Logs: von den kuratierten Seiten benutzte genau
+eine Logs, und die zeigt Kubernetes-*Ereignisse*. `Explore` ist fuer einen
+Viewer **zu** - Grafana wirft `/explore` auf die Startseite (302, am
+2026-11-28 gemessen), waehrend `/dashboards` und `/d/<uid>` mit 200 antworten.
+Der Schalter `exploreEnabled: true` in `/api/frontend/settings` ist global und
+sagt nichts ueber diesen Nutzer.
+
+Deshalb gibt es `TENANT_DASHBOARD_UIDS` neben `TENANT_FOLDERS`. Und deshalb
+wird eine Seite **vor** dem Aufnehmen gegen die **geklemmte** Quelle des
+Mandanten geprueft, nicht gegen `Main Org.`: beim Log-Browser waren das die
+Felder (`k8s.cluster.name`, `k8s.node.name`, `k8s.namespace.name`,
+`k8s.pod.name`, `k8s.container.name`, `severity` - alle da) und die
+Vorgabe der `severity`-Variablen (`includeAll` mit `allValue: '.*'`, current
+`$__all`; ohne Filter 2.045.412 Zeilen, mit `severity:~".*"` dieselben - die
+Vorgabe verschluckt nichts). Die 960.403 Zeilen mit `Unspecified` fallen nur
+weg, wenn jemand einzelne Stufen bewusst waehlt.
+
+Die 41 anderen bleiben, wo sie sind (am 2026-11-27 durchgesehen): Kcm, Ksm,
+Istio, Victoria* (bis auf den Log-Browser), Ceph, Nvidia, Opencost und 28
+Seiten Kube-Prometheus-Stack-Innenleben. Ihre Felder blieben beim Kunden ohnehin
 leer - die Klemme filtert die Reihen weg -, und ihre **Titel** allein verraten,
 woraus der Stapel gebaut ist.
 
