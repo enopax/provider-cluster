@@ -355,10 +355,41 @@ const TENANT_FOLDERS = (process.env.KOF_TENANT_DASHBOARD_FOLDERS || 'Cluster Mon
   .map((x) => x.trim())
   .filter(Boolean);
 
-/** Einzelne Seiten aus fremden Ordnern. `Kubernetes Events` traegt zwei, und
- *  nur eine davon handelt vom Cluster des Kunden - die andere zeigt
- *  k0rdent-ClusterDeployments. */
-const TENANT_DASHBOARD_UIDS = (process.env.KOF_TENANT_DASHBOARD_UIDS || 'kubernetes-event-exporter')
+/**
+ * Einzelne Seiten aus fremden Ordnern.
+ *
+ * Nach Ordner zu filtern ist grob, und zweimal zu grob: in `Kubernetes Events`
+ * handelt nur eine der beiden Seiten vom Cluster des Kunden (die andere zeigt
+ * k0rdent-ClusterDeployments), und in `Victoria Metrics`/`Victoria Logs`
+ * beschreiben die Seiten unseren Speicherstapel - **ausser einer**.
+ *
+ *   kubernetes-event-exporter   "All Kubernetes Events"
+ *   aeckkt1pio0sgc              "VictoriaLogs Dashboard"
+ *
+ * Die zweite ist der **Log-Browser des Mandanten**, und ohne sie gab es
+ * keinen: von den sieben kuratierten Seiten benutzte genau eine Logs, und die
+ * zeigt Kubernetes-*Ereignisse*. `Explore` ist fuer einen Viewer zu - Grafana
+ * wirft `/explore` auf die Startseite (302, am 2026-11-28 gemessen) -, es gab
+ * also gar keinen Weg zu den Logs. Der Ordner `Victoria Logs` bleibt im
+ * uebrigen ausgeschlossen: `VictoriaLogs - cluster` zeigt Plattenbelegung und
+ * Insert/s unseres Stapels.
+ *
+ * **Vor dem Aufnehmen geprueft**, gegen die geklemmte Datenquelle des
+ * Mandanten, nicht gegen Main Org.:
+ *
+ *   Felder   k8s.cluster.name, k8s.node.name, k8s.namespace.name,
+ *            k8s.pod.name, k8s.container.name, severity - alle vorhanden
+ *   Vorgabe  severity hat includeAll mit allValue `.*`, current `$__all`
+ *   gemessen ohne Filter 2.045.412 Zeilen, mit `severity:~".*"` dieselben
+ *            2.045.412 - die Vorgabe verschluckt nichts
+ *
+ * Die 960.403 Zeilen mit `severity: Unspecified` fallen nur weg, wenn jemand
+ * einzelne Stufen bewusst waehlt (dann 1.084.876). Das ist seine Wahl und kein
+ * stilles Loch.
+ */
+const TENANT_DASHBOARD_UIDS = (
+  process.env.KOF_TENANT_DASHBOARD_UIDS || 'kubernetes-event-exporter,aeckkt1pio0sgc'
+)
   .split(',')
   .map((x) => x.trim())
   .filter(Boolean);

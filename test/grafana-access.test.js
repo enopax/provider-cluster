@@ -169,6 +169,14 @@ const SOURCES = [
     folderTitle: 'Victoria Metrics', folderUid: 'vmfolder',
     dashboard: { uid: 'victoria-metrics-cluster', title: 'VictoriaMetrics - cluster', id: 80, version: 1, panels: [] },
   },
+  {
+    // Der Log-Browser - liegt im **selben** ausgeschlossenen Ordner wie die
+    // Zeile darueber und muss trotzdem mit. Deshalb gibt es die uid-Liste
+    // neben der Ordnerliste: nach Ordner allein ist zu grob.
+    uid: 'aeckkt1pio0sgc', title: 'VictoriaLogs Dashboard',
+    folderTitle: 'Victoria Logs', folderUid: 'vlfolder',
+    dashboard: { uid: 'aeckkt1pio0sgc', title: 'VictoriaLogs Dashboard', id: 81, version: 1, panels: [] },
+  },
 ];
 
 /** Ein Grafana aus Papier: merkt sich jeden Aufruf und antwortet knapp. */
@@ -703,12 +711,13 @@ test('kopiert die kuratierten Seiten in die Organisation des Mandanten', async (
     ...BASE,
   });
 
+  const erwartet = ['aeckkt1pio0sgc', 'k8s_views_pods', 'kubernetes-event-exporter', 'rYdddlPWk'];
   const kopiert = result.created.dashboards.map((d) => d.uid).sort();
-  assert.deepStrictEqual(kopiert, ['k8s_views_pods', 'kubernetes-event-exporter', 'rYdddlPWk']);
+  assert.deepStrictEqual(kopiert, erwartet);
 
   // Und sie liegen **in** der Organisation des Mandanten, nicht in Main Org.
   const beimMandanten = [...(grafana.dashboardsByOrg.get(result.orgId) || new Map()).keys()].sort();
-  assert.deepStrictEqual(beimMandanten, ['k8s_views_pods', 'kubernetes-event-exporter', 'rYdddlPWk']);
+  assert.deepStrictEqual(beimMandanten, erwartet);
 });
 
 test('kopiert nichts, was unsere Plattform beschreibt', async () => {
@@ -766,9 +775,9 @@ test('legt beim zweiten Sprung keine Kopie nach', async () => {
     fetchImpl: grafana.fetchImpl, ...BASE,
   });
 
-  assert.strictEqual(vorher, 3);
+  assert.strictEqual(vorher, 4);
   assert.deepStrictEqual(zweiter.created.dashboards, []);
-  assert.strictEqual(zaehle(), 3, 'beim zweiten Mal darf nichts geschrieben werden');
+  assert.strictEqual(zaehle(), 4, 'beim zweiten Mal darf nichts geschrieben werden');
 });
 
 test('legt den Ordner in der Organisation des Mandanten an', async () => {
@@ -781,7 +790,11 @@ test('legt den Ordner in der Organisation des Mandanten an', async () => {
   });
 
   const ordner = [...(grafana.foldersByOrg.get(result.orgId) || new Map()).values()].sort();
-  assert.deepStrictEqual(ordner, ['Cluster Monitoring', 'Kubernetes Events']);
+  // `Victoria Logs` steht dabei, weil der Log-Browser daraus stammt. Der
+  // Kunde sieht damit einen Ordnernamen aus unserem Stapel - das ist bekannt
+  // und der Preis dafuer, dass die Kopie die Ablage der Vorlage uebernimmt.
+  // Umzubenennen waere eine zweite Wahrheit ueber denselben Ordner.
+  assert.deepStrictEqual(ordner, ['Cluster Monitoring', 'Kubernetes Events', 'Victoria Logs']);
   // Derselbe Ordner-uid wie in der Vorlage, damit die Ablage ueberall gleich
   // aussieht.
   assert.ok([...(grafana.foldersByOrg.get(result.orgId)).keys()].includes('afurpjhddp6v4c'));
@@ -804,5 +817,25 @@ test('ein vorhandener Ordner ist kein Fehler', async () => {
     regionalCore: regional.core, regionalObjects: regional.objects,
     fetchImpl, ...BASE,
   });
-  assert.strictEqual(result.created.dashboards.length, 3);
+  assert.strictEqual(result.created.dashboards.length, 4);
+});
+
+test('nimmt den Log-Browser mit, obwohl sein Ordner ausgeschlossen ist', async () => {
+  // Ohne ihn gab es **keinen** Weg zu den Logs: von den kuratierten Seiten
+  // benutzte genau eine Logs, und die zeigt Kubernetes-Ereignisse. `Explore`
+  // ist fuer einen Viewer zu - Grafana wirft `/explore` auf die Startseite.
+  const regional = fakeRegional();
+  const grafana = fakeGrafana();
+
+  const result = await ga.ensureDashboardAccess({
+    regionalCore: regional.core, regionalObjects: regional.objects,
+    fetchImpl: grafana.fetchImpl, ...BASE,
+  });
+
+  const beimMandanten = [...grafana.dashboardsByOrg.get(result.orgId).keys()];
+  assert.ok(beimMandanten.includes('aeckkt1pio0sgc'), beimMandanten.join(', '));
+  // Und die Nachbarseite aus demselben Ordner bleibt draussen - der Ordner
+  // ist weiter ausgeschlossen, nur diese eine uid ist benannt.
+  assert.ok(!beimMandanten.includes('victoria-metrics-cluster'));
+  assert.ok(ga.TENANT_DASHBOARD_UIDS.includes('aeckkt1pio0sgc'));
 });
